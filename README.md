@@ -1,1 +1,370 @@
-# HackIllinois
+# LAVA Entropy Oracle
+
+A minimal, production-lean Node.js + TypeScript backend that:
+
+1. Fetches Solana devnet state (slot + latest blockhash) and 30 token account states every N seconds.
+2. Fetches row UUIDs from a **Supabase** table (your document IDs).
+3. Computes a deterministic **SHA3-256 entropy seed** from all three sources — token state + doc IDs + chain values.
+4. Commits only the **hash** of the doc IDs on-chain via the **SPL Memo program** (raw IDs never leave your backend).
+5. Persists every commit to `data/commits.jsonl`.
+6. Ships a verifier CLI to inspect any committed transaction.
+
+---
+
+## Project Structure
+
+```
+.
+├── src/
+│   ├── index.ts          # Main loop (orchestration)
+│   ├── solana.ts         # Connection, keypair loader, tx send w/ retry
+│   ├── snapshot.ts       # Fetch & canonicalize token account states
+│   ├── entropy.ts        # Stable stringify + SHA3-256 derivation
+│   ├── memoCommit.ts     # Build Memo instruction + send commit tx
+│   ├── supabase.ts       # Supabase client + document ID fetcher
+│   ├── verifyMemo.ts     # CLI: fetch tx and verify LAVA_V1 memo
+│   └── bs58shim.ts       # Internal: bs58 re-export for verifier fallback
+├── scripts/
+│   └── bootstrap.ts      # One-time: create 30 devnet token accounts
+├── config/
+│   ├── token_accounts.example.json   # Example: 30 token account pubkeys
+│   └── token_accounts.json           # Your actual keys (git-ignored)
+├── data/                             # Persisted commits (git-ignored)
+│   └── commits.jsonl
+├── .env.example
+├── .gitignore
+├── package.json
+├── tsconfig.json
+└── README.md
+```
+
+---
+
+## Prerequisites
+
+| Tool | Version |
+|------|---------|
+| Node.js | ≥ 18 |
+| npm | ≥ 9 |
+| Solana CLI | ≥ 1.18 (for keygen + airdrop) |
+
+---
+
+## Setup
+
+### 1. Install dependencies
+
+```bash
+npm install
+```
+
+### 2. Configure environment
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` — Supabase vars are required, Solana vars have devnet defaults:
+
+```
+SOLANA_RPC_URL=https://api.devnet.solana.com
+SOLANA_KEYPAIR_PATH=~/.config/solana/id.json
+ENTROPY_INTERVAL_MS=5000
+TOKEN_ACCOUNTS=          # leave blank to use config/token_accounts.json
+DRY_RUN=false
+
+SUPABASE_URL=https://your-project-ref.supabase.co
+SUPABASE_SERVICE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+SUPABASE_TABLE=documents
+SUPABASE_ID_COLUMN=id
+SUPABASE_LIMIT=1000
+```
+
+### 3. Configure Supabase
+
+1. Go to your [Supabase Dashboard](https://app.supabase.com) → **Project Settings** → **API**
+2. Copy **Project URL** → `SUPABASE_URL`
+3. Copy **service_role** key (the secret one, not anon) → `SUPABASE_SERVICE_KEY`
+4. Set `SUPABASE_TABLE` to the table whose row IDs you want committed
+5. Set `SUPABASE_ID_COLUMN` to the primary key column name (usually `id`)
+
+> **Why service role?** The service role key bypasses Row Level Security so the oracle can always read IDs regardless of RLS policies. It is only used server-side and never exposed to clients.
+
+> **Privacy guarantee:** Only a SHA3-256 hash of the sorted IDs is committed on-chain. The raw UUIDs never leave your server and are never logged.
+
+### 4. Create (or fund) your payer keypair
+
+```bash
+# Generate a new keypair (skip if you already have one)
+solana-keygen new --outfile ~/.config/solana/id.json
+
+# Fund with devnet SOL (you need ~0.01 SOL per commit)
+solana airdrop 2 --url https://api.devnet.solana.com
+```
+
+### 5. Configure token accounts
+
+Option A — environment variable (comma-separated, exactly 30 keys):
+```bash
+# In .env:
+TOKEN_ACCOUNTS=Pubkey1,Pubkey2,...,Pubkey30
+```
+
+Option B — bootstrap script (creates 30 fresh ATAs on devnet automatically):
+```bash
+npx ts-node scripts/bootstrap.ts
+# Writes config/token_accounts.json automatically
+```
+
+Option C — config file (bring your own):
+```bash
+cp config/token_accounts.example.json config/token_accounts.json
+# Edit with 30 real devnet token account pubkeys
+```
+
+---
+
+## Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `SOLANA_RPC_URL` | `https://api.devnet.solana.com` | Solana RPC endpoint |
+| `SOLANA_KEYPAIR_PATH` | `~/.config/solana/id.json` | Path to payer keypair JSON |
+| `ENTROPY_INTERVAL_MS` | `5000` | Milliseconds between oracle ticks |
+| `TOKEN_ACCOUNTS` | _(empty)_ | Comma-separated list of 30 token account pubkeys |
+| `DRY_RUN` | `false` | If `true`, compute entropy but do not submit a transaction |
+| `SUPABASE_URL` | _(required)_ | Your Supabase project URL |
+| `SUPABASE_SERVICE_KEY` | _(required)_ | Supabase service role secret key |
+| `SUPABASE_TABLE` | `documents` | Table to read row IDs from |
+| `SUPABASE_ID_COLUMN` | `id` | Primary key column name |
+| `SUPABASE_LIMIT` | `1000` | Max rows fetched per tick |
+
+---
+
+## Running
+
+### Development (ts-node, no build step)
+
+```bash
+npm run dev
+```
+
+### Production (compile then run)
+
+```bash
+npm run build
+npm start
+```
+
+### Dry-run (compute entropy, no tx submitted)
+
+```bash
+DRY_RUN=true npm run dev
+```
+
+### Expected startup output
+
+```
+═══════════════════════════════════════════════════════════════
+  LAVA Entropy Oracle — Solana Devnet + Supabase
+═══════════════════════════════════════════════════════════════
+  RPC URL    : https://api.devnet.solana.com
+  Payer      : <your-pubkey>
+  Balance    : 1.9980 SOL
+  Interval   : 5000ms
+  Dry-run    : false
+  Supabase   : https://yourproject.supabase.co
+  Table      : documents
+  Commits    : /path/to/data/commits.jsonl
+═══════════════════════════════════════════════════════════════
+[supabase] Connection validated — table="documents", column="id"
+[index] Loaded 30 token accounts.
+[index] Starting oracle loop. Press Ctrl+C to stop.
+
+[tick] Fetching Supabase IDs + Solana snapshot in parallel…
+[tick] Snapshot  — slot=350123456  blockhash=AbCdEf…
+[tick] Supabase  — table="documents"  ids=142
+[tick] ts                : 2026-02-28T12:00:00.000Z
+[tick] slot              : 350123456
+[tick] doc_count         : 142
+[tick] tokens_state_hash : a3f9...b82c
+[tick] docs_hash         : 9c2e...f341
+[tick] entropy_seed      : 7d1e...4f90
+[tick] Submitting commit transaction…
+[tick] Confirmed! Signature: 5xKjP…
+[tick] Explorer  : https://explorer.solana.com/tx/5xKjP…?cluster=devnet
+[tick] Persisted to data/commits.jsonl  (1842ms total)
+```
+
+---
+
+## Verifier CLI
+
+After the oracle commits a transaction, you can verify it:
+
+```bash
+npm run verify -- <transaction-signature>
+```
+
+Example:
+
+```bash
+npm run verify -- 5xKjPmWqNvRtYfHgBdCzA2…
+```
+
+Output:
+```
+── Transaction Info ───────────────────────────────────────────
+  Signature : 5xKjP…
+  Slot      : 350123456
+  Block time: 2026-02-28T12:00:01.500Z
+  Status    : SUCCESS
+  Explorer  : https://explorer.solana.com/tx/5xKjP…?cluster=devnet
+
+── Raw Memo Content ───────────────────────────────────────────
+  LAVA_V1|slot=350123456|blockhash=AbCdEf…|tokens=a3f9…|docs=9c2e…|n=142|seed=7d1e…
+
+── Parsed LAVA_V1 Fields ──────────────────────────────────────
+  version           : LAVA_V1
+  slot              : 350123456
+  blockhash         : AbCdEf…
+  tokens_state_hash : a3f9…b82c
+  docs_hash         : 9c2e…f341
+  doc_count         : 142
+  entropy_seed      : 7d1e…4f90
+
+── Validation ─────────────────────────────────────────────────
+  All checks passed.
+
+[verifyMemo] Verification complete.
+```
+
+---
+
+## Persisted Data
+
+Each oracle tick appends one JSON line to `data/commits.jsonl`:
+
+```jsonl
+{"ts":"2026-02-28T12:00:00.000Z","slot":350123456,"blockhash":"AbCdEf…","tokens_state_hash":"a3f9…","docs_hash":"9c2e…","doc_count":142,"entropy_seed":"7d1e…","signature":"5xKjP…"}
+```
+
+`signature` is `null` in dry-run mode or when the transaction fails.
+
+---
+
+## Entropy Algorithm
+
+```
+# Token state commitment
+canonical_tokens_json = stableStringify(sort(token_states, by=pubkey))
+tokens_state_hash     = sha3_256(canonical_tokens_json)
+
+# Document ID commitment  (raw IDs never leave the server)
+docs_canonical        = sort(supabase_uuids).join("|")
+docs_hash             = sha3_256(docs_canonical)
+
+# Final seed: all three sources combined
+entropy_seed          = sha3_256(tokens_state_hash + "|" + docs_hash + "|" + slot + "|" + blockhash)
+```
+
+**Stable stringify** sorts object keys lexicographically at every nesting level, ensuring identical output regardless of JS engine insertion order.
+
+**Privacy:** Raw document IDs are hashed locally before anything leaves the process. The Memo on-chain contains only `docs_hash` — a one-way commitment. To later prove a specific set of IDs was committed, re-hash the sorted ID list and compare against the on-chain `docs_hash`.
+
+**Token state fallback:** If `getParsedAccountInfo` returns raw bytes (account is not an SPL token account), the oracle hashes the raw base64 data and records `{ token_account_pubkey, raw_data_hash, error }` instead of crashing.
+
+---
+
+## Troubleshooting
+
+| Problem | Solution |
+|---|---|
+| `Keypair file not found` | Run `solana-keygen new` or set `SOLANA_KEYPAIR_PATH` |
+| `Expected exactly 30 token account pubkeys, got N` | Check `TOKEN_ACCOUNTS` env or `config/token_accounts.json` |
+| `Transaction failed: blockhash not found` | RPC is slow; the oracle retries automatically (5 attempts, exponential backoff) |
+| `Balance is low` | Run `solana airdrop 2 --url devnet` |
+| `sha3-256` not supported | Ensure Node.js ≥ 18 (ships OpenSSL 3 with SHA3 support) |
+| `503 / 429 from RPC` | Switch to a private RPC (e.g. Helius, QuickNode) via `SOLANA_RPC_URL` |
+| Transaction not found in verifier | Wait ~5s for confirmation, then retry |
+| `SUPABASE_URL is not set` | Add `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` to your `.env` file |
+| `Supabase query failed` | Check table name (`SUPABASE_TABLE`), column name (`SUPABASE_ID_COLUMN`), and that your service role key has read access |
+| `Supabase fetch failed (using empty list)` | Supabase error mid-run; oracle continues with empty doc list and logs a warning. Check your Supabase project status. |
+
+---
+
+## Next Step: Swap Memo for a Custom Solana Program
+
+When you're ready to replace the Memo program with your own Anchor instruction, **only one file needs to change: `src/memoCommit.ts`**.
+
+Here's exactly what to do:
+
+### 1. Install Anchor
+
+```bash
+npm install @coral-xyz/anchor
+```
+
+### 2. Add your IDL
+
+Place your compiled IDL at `src/idl/lava_oracle.json`.
+
+### 3. Replace `buildMemoInstruction` in `src/memoCommit.ts`
+
+```typescript
+// Before (Memo):
+import { MEMO_PROGRAM_ID } from "./memoCommit";
+
+function buildMemoInstruction(memoText: string, signerPubkey: PublicKey) {
+  return new TransactionInstruction({ programId: MEMO_PROGRAM_ID, ... });
+}
+
+// After (Anchor):
+import { Program, AnchorProvider, Wallet } from "@coral-xyz/anchor";
+import { IDL } from "./idl/lava_oracle";
+
+const PROGRAM_ID = new PublicKey("YOUR_PROGRAM_ID_HERE");
+
+function buildAnchorInstruction(
+  payload: CommitPayload,
+  payer: Keypair,
+  connection: Connection
+): TransactionInstruction {
+  const provider = new AnchorProvider(
+    connection,
+    new Wallet(payer),
+    { commitment: "confirmed" }
+  );
+  const program = new Program(IDL, PROGRAM_ID, provider);
+
+  // Replace with your actual instruction name and account structure:
+  return program.instruction.commitEntropy(
+    Buffer.from(payload.entropy_seed, "hex"),
+    Buffer.from(payload.tokens_state_hash, "hex"),
+    {
+      accounts: {
+        payer: payer.publicKey,
+        entropyState: deriveEntropyPDA(payload.slot),
+        systemProgram: SystemProgram.programId,
+      },
+    }
+  );
+}
+```
+
+### 4. Update `sendCommit` to call `buildAnchorInstruction`
+
+```typescript
+// In sendCommit(), replace:
+const instruction = buildMemoInstruction(memoText, payer.publicKey);
+// With:
+const instruction = buildAnchorInstruction(payload, payer, connection);
+```
+
+`src/index.ts`, `src/solana.ts`, `src/entropy.ts`, `src/snapshot.ts`, and the persistence layer all remain **unchanged**.
+
+---
+
+## License
+
+MIT

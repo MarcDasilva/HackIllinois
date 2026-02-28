@@ -1,0 +1,33 @@
+{
+  "name": "lava-entropy-oracle",
+  "version": "1.0.0",
+  "description": "On-chain entropy seed oracle: snapshots Solana token accounts, computes SHA3-256 entropy, commits via Memo program.",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "ts-node --project tsconfig.json src/index.ts",
+    "start": "node dist/index.js",
+    "verify": "ts-node --project tsconfig.json src/verifyMemo.ts"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@solana/spl-token": "^0.4.14",
+    "@solana/web3.js": "^1.95.3",
+    "@supabase/supabase-js": "^2.98.0",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.5"
+  },
+  "keywords": [
+    "solana",
+    "entropy",
+    "oracle",
+    "devnet"
+  ],
+  "license": "MIT"
+}
