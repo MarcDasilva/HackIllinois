@@ -6,7 +6,9 @@
   "scripts": {
     "build": "tsc",
     "dev": "ts-node --project tsconfig.json src/index.ts",
+    "dev:server": "ts-node --project tsconfig.json src/server.ts",
     "start": "node dist/index.js",
+    "start:server": "node dist/server.js",
     "verify": "ts-node --project tsconfig.json src/verifyMemo.ts"
   },
   "engines": {
@@ -16,9 +18,12 @@
     "@solana/spl-token": "^0.4.14",
     "@solana/web3.js": "^1.95.3",
     "@supabase/supabase-js": "^2.98.0",
-    "dotenv": "^16.4.5"
+    "dotenv": "^16.4.5",
+    "express": "^5.2.1",
+    "googleapis": "^171.4.0"
   },
   "devDependencies": {
+    "@types/express": "^5.0.6",
     "@types/node": "^20.14.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.4.5"

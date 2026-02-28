@@ -365,6 +365,129 @@ const instruction = buildAnchorInstruction(payload, payer, connection);
 
 ---
 
+## Google Drive Integration
+
+The server exposes an HTTP API for transferring files between Drive folders,
+with state tracked in Supabase so the entropy oracle automatically picks up
+every document change.
+
+### Architecture
+
+```
+User → GET /oauth/google           → Google consent page
+Google → GET /oauth/callback       → tokens stored in user_integrations table
+Client → POST /transfer            → moves file in Drive, updates documents row
+Oracle (index.ts) next tick        → sees updated row, includes new state in hash
+```
+
+### Setup
+
+#### 1. Create a Google Cloud project & OAuth credentials
+
+1. Go to [https://console.cloud.google.com/apis/credentials](https://console.cloud.google.com/apis/credentials)
+2. Create an **OAuth 2.0 Client ID** (Application type: **Web application**)
+3. Add `http://localhost:3000/oauth/callback` to **Authorized redirect URIs**
+4. Enable the **Google Drive API** under *APIs & Services → Enabled APIs*
+5. Copy your **Client ID** and **Client Secret**
+
+#### 2. Run the Supabase migration
+
+In **Supabase Dashboard → SQL Editor**, run:
+
+```
+supabase/migrations/20260228010000_add_drive_integration.sql
+```
+
+This adds:
+- `user_integrations` table — stores OAuth tokens per user
+- Drive-specific columns on `documents` (`drive_file_id`, `drive_folder_id`, `mime_type`, `transfer_status`, …)
+
+#### 3. Add Google env vars to `.env`
+
+```
+GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=GOCSPX-your-secret
+GOOGLE_REDIRECT_URI=http://localhost:3000/oauth/callback
+OAUTH_SUCCESS_REDIRECT=       # optional — redirect after OAuth
+SERVER_PORT=3000
+```
+
+#### 4. Start the server
+
+```bash
+npm run dev:server
+```
+
+### API reference
+
+#### Connect Google Drive
+
+```
+GET /oauth/google?user_id=<supabase-uuid>
+```
+
+Redirects the user to Google's consent page. After approval, Google calls
+`/oauth/callback` and tokens are stored automatically.
+
+#### Trigger a file transfer
+
+```
+POST /transfer
+Content-Type: application/json
+
+{
+  "document_id":      "uuid-of-documents-row",
+  "target_folder_id": "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms",
+  "user_id":          "supabase-user-uuid"
+}
+```
+
+**Response (200 — success):**
+
+```json
+{
+  "documentId":    "uuid-of-documents-row",
+  "status":        "done",
+  "newFolderId":   "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms",
+  "transferredAt": "2026-02-28T22:00:00.000Z"
+}
+```
+
+**Response (500 — error):**
+
+```json
+{
+  "documentId": "uuid-of-documents-row",
+  "status":     "error",
+  "error":      "Reason the transfer failed"
+}
+```
+
+#### Health check
+
+```
+GET /health
+```
+
+### transfer_status lifecycle
+
+| Status | Meaning |
+|---|---|
+| `none` | No transfer requested |
+| `pending` | POST /transfer received, job not yet started |
+| `in_progress` | Drive API call in flight |
+| `done` | Transfer succeeded |
+| `error` | Last attempt failed — see `transfer_error` column |
+
+### How the oracle picks up changes
+
+The entropy oracle (`src/index.ts`) needs **zero changes**. On each tick it fetches
+all row IDs from `documents` — after a transfer updates `drive_folder_id` or
+`transferred_at`, the `updated_at` timestamp changes, and the oracle's next hash
+reflects the new state automatically.
+
+---
+
 ## License
 
 MIT
