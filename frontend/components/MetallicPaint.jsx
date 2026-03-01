@@ -273,7 +273,8 @@ export default function MetallicPaint({
   mouseAnimation = false,
   distortion = 1,
   contour = 0.2,
-  tintColor = '#feb3ff'
+  tintColor = '#feb3ff',
+  onReady
 }) {
   const canvasRef = useRef(null);
   const glRef = useRef(null);
@@ -290,6 +291,11 @@ export default function MetallicPaint({
 
   const [ready, setReady] = useState(false);
   const [textureReady, setTextureReady] = useState(false);
+  const onReadyRef = useRef(onReady);
+
+  useEffect(() => {
+    onReadyRef.current = onReady;
+  }, [onReady]);
 
   useEffect(() => {
     speedRef.current = speed;
@@ -408,6 +414,11 @@ export default function MetallicPaint({
       const imgData = processImage(img);
       uploadTexture(imgData);
       setTextureReady(true);
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (onReadyRef.current) onReadyRef.current();
+        });
+      });
     };
     img.src = imageSrc;
   }, [ready, imageSrc, uploadTexture]);
@@ -503,5 +514,9 @@ export default function MetallicPaint({
     };
   }, [ready, textureReady]);
 
-  return <canvas ref={canvasRef} className="paint-container" />;
+  return (
+    <div className="paint-wrapper" style={{ position: 'relative', width: '100%', height: '100%' }}>
+      <canvas ref={canvasRef} className="paint-container" style={{ opacity: textureReady ? 1 : 0, transition: 'opacity 0.2s ease-out' }} />
+    </div>
+  );
 }
