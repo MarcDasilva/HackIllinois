@@ -5,7 +5,9 @@ coverage/
 
 data/
 
+.env.example
 .env
+.env.*
 .env.local
 .env.*.local
 
@@ -17,4 +19,8 @@ pnpm-debug.log*
 
 .DS_Store
 
-/frontend_copy
+# Config files with secrets
+config/token_accounts.json
+config/google-service-account.json
+config/google-service-account.example.json
+.env.example

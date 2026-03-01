@@ -1,17 +1,9 @@
 "use client";
 
-import { useRef, useState, useCallback, useEffect } from "react";
-import { useSearchParams } from "next/navigation";
-import {
-  motion,
-  useScroll,
-  useTransform,
-  AnimatePresence,
-} from "framer-motion";
+import { useRef, useState } from "react";
+import { motion, useScroll, useTransform } from "framer-motion";
 import { ChevronDown } from "lucide-react";
 import MetallicPaint from "@/components/MetallicPaint";
-import { AuthErrorToast } from "@/components/auth-error-toast";
-import { createClient } from "@/lib/supabase/client";
 
 const images = [
   "/premium_photo-1670573801174-1ab41ec2afa0.avif",
@@ -31,13 +23,7 @@ function landingBgUrl() {
 /** White Google "G" logo for Sign in with Google button */
 function GoogleLogo({ className }: { className?: string }) {
   return (
-    <svg
-      className={className}
-      width="20"
-      height="20"
-      viewBox="0 0 24 24"
-      aria-hidden
-    >
+    <svg className={className} width="20" height="20" viewBox="0 0 24 24" aria-hidden>
       <path
         fill="currentColor"
         d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
@@ -61,49 +47,6 @@ function GoogleLogo({ className }: { className?: string }) {
 export function HeroSection() {
   const containerRef = useRef<HTMLDivElement>(null);
   const [metallicReady, setMetallicReady] = useState(false);
-  const [authError, setAuthError] = useState<string | null>(null);
-  const searchParams = useSearchParams();
-
-  // Sync callback redirect error into state so we can show and dismiss it
-  const callbackError = searchParams.get("error");
-  useEffect(() => {
-    if (callbackError === "auth_callback") {
-      setAuthError("Sign-in failed. Please try again.");
-    }
-  }, [callbackError]);
-
-  const dismissError = useCallback(() => setAuthError(null), []);
-
-  const handleSignInWithGoogle = useCallback(async () => {
-    setAuthError(null);
-    try {
-      const supabase = createClient();
-      const { data, error } = await supabase.auth.signInWithOAuth({
-        provider: "google",
-        options: {
-          // Where Supabase sends the user after OAuth. Add this exact URL in Supabase Dashboard → Auth → URL Configuration → Redirect URLs.
-          redirectTo:
-            typeof window !== "undefined"
-              ? `${window.location.origin}/auth/callback`
-              : undefined,
-        },
-      });
-      if (error) {
-        setAuthError(error.message);
-        return;
-      }
-      if (data?.url) {
-        window.location.href = data.url;
-      }
-    } catch (err) {
-      setAuthError(
-        err instanceof Error
-          ? err.message
-          : "Sign-in failed. Please try again.",
-      );
-    }
-  }, []);
-
   const { scrollYProgress } = useScroll({
     target: containerRef,
     offset: ["start start", "end start"],
@@ -146,11 +89,7 @@ export function HeroSection() {
               src="/velumclear.png"
               alt=""
               className="absolute inset-0 w-full h-full object-contain"
-              style={{
-                opacity: metallicReady ? 0 : 1,
-                transition: "opacity 0.25s ease-out",
-                pointerEvents: "none",
-              }}
+              style={{ opacity: metallicReady ? 0 : 1, transition: "opacity 0.25s ease-out", pointerEvents: "none" }}
               aria-hidden
             />
             <MetallicPaint
@@ -166,10 +105,7 @@ export function HeroSection() {
               onReady={() => setMetallicReady(true)}
             />
           </div>
-          <span
-            className="text-6xl md:text-7xl lg:text-8xl font-bold tracking-tight font-serif"
-            style={{ color: VELUM_GOLD }}
-          >
+          <span className="text-6xl md:text-7xl lg:text-8xl font-bold tracking-tight font-serif" style={{ color: VELUM_GOLD }}>
             Velum
           </span>
         </div>
@@ -233,39 +169,18 @@ export function HeroSection() {
         transition={{ duration: 1, delay: 0.8 }}
       >
         <h1 className="text-5xl md:text-7xl lg:text-8xl font-serif text-center text-foreground mix-blend-difference pointer-events-none">
-          Identity stays{" "}
-          <em
-            className="italic font-serif font-bold tracking-tight mix-blend-normal"
-            style={{
-              color: VELUM_GOLD,
-              WebkitTextStroke: "4px white",
-              paintOrder: "stroke fill",
-            }}
-          >
-            Yours
-          </em>
+          Documents stay <em className="italic font-serif font-bold tracking-tight mix-blend-normal" style={{ color: VELUM_GOLD, WebkitTextStroke: '4px white', paintOrder: 'stroke fill' }}>Yours</em>
         </h1>
         <a
           href="#"
-          role="button"
           className="inline-flex items-center gap-2.5 px-6 py-3 rounded-3xl bg-black border-2 border-white text-white text-lg font-medium hover:bg-white hover:text-black transition-colors pointer-events-auto [&_svg]:text-white [&:hover_svg]:text-black"
-          style={{ fontFamily: "Helvetica, Arial, sans-serif" }}
+          style={{ fontFamily: 'Helvetica, Arial, sans-serif' }}
           data-clickable
-          onClick={(e) => {
-            e.preventDefault();
-            handleSignInWithGoogle();
-          }}
         >
           <GoogleLogo />
           Sign in with Google
         </a>
       </motion.div>
-
-      <AnimatePresence>
-        {authError && (
-          <AuthErrorToast message={authError} onDismiss={dismissError} />
-        )}
-      </AnimatePresence>
 
       <motion.div
         className="absolute bottom-8 left-1/2 -translate-x-1/2"
