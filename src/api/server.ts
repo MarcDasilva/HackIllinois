@@ -107,7 +107,16 @@ app.post('/api/drive/encrypt', async (req: Request, res: Response) => {
         error: 'fileIds must be a non-empty array',
       });
     }
-    
+    // Sanitize file IDs (trim and strip trailing garbage from shell/encoding, e.g. stray " or ??)
+    const sanitizedFileIds = fileIds.map((id: string) =>
+      String(id).trim().replace(/["?\s]+$/g, '').replace(/^["?\s]+/g, '')
+    ).filter(Boolean);
+    if (sanitizedFileIds.length === 0) {
+      return res.status(400).json({
+        error: 'fileIds must be a non-empty array of valid strings',
+      });
+    }
+
     if (mode && mode !== 'full' && mode !== 'pattern') {
       return res.status(400).json({
         error: 'mode must be either "full" or "pattern"',
@@ -115,7 +124,7 @@ app.post('/api/drive/encrypt', async (req: Request, res: Response) => {
     }
     
     const jobId = await encryptionWorkflow.startEncryptionJob(
-      fileIds,
+      sanitizedFileIds,
       mode || 'pattern',
       replaceOriginal || false
     );
@@ -123,7 +132,7 @@ app.post('/api/drive/encrypt', async (req: Request, res: Response) => {
     res.json({
       jobId,
       status: 'started',
-      message: `Encryption job started for ${fileIds.length} file(s)`,
+      message: `Encryption job started for ${sanitizedFileIds.length} file(s)`,
     });
   } catch (error) {
     console.error('[API] Error starting encryption job:', error);

@@ -160,6 +160,7 @@ export async function encryptFile(
     
     await upsertDocument({
       id: documentId,
+      title: metadata.name ?? 'Untitled',
       google_drive_id: fileId,
       google_drive_name: metadata.name,
       encryption_status: 'pending',
