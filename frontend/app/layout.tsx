@@ -24,6 +24,10 @@ const instrumentSerif = Instrument_Serif({
 export const metadata: Metadata = {
   title: "Velum",
   description: "Velum",
+  icons: {
+    icon: "/velumclear.png",
+    apple: "/velumclear.png",
+  },
 };
 
 export default function RootLayout({

@@ -467,9 +467,9 @@ export default function DocumentsPage() {
   if (!user) return null;
 
   const sidebarUser = {
-    name: user.displayName ?? user.email ?? "User",
+    name: user.user_metadata?.full_name ?? user.user_metadata?.name ?? user.email ?? "User",
     email: user.email ?? "",
-    avatar: user.photoURL ?? undefined,
+    avatar: user.user_metadata?.avatar_url ?? user.user_metadata?.picture ?? undefined,
   };
 
   return (
