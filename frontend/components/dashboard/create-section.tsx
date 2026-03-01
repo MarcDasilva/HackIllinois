@@ -1,13 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { File as FileIcon, Plus, X, Send, Download, Loader2 } from "lucide-react";
+import { File as FileIcon, Plus, X, Send, Download, Loader2, Coins } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/lib/auth/auth-provider";
+import { useConnection, useWallet } from "@solana/wallet-adapter-react";
+import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
+import { Transaction } from "@solana/web3.js";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { STORAGE_DRAG_TYPE, type StorageDragPayload } from "@/lib/drag-types";
 import { ToastError } from "@/components/dashboard/toast-error";
+import { sha256Hex } from "@/lib/solana-mint";
 
 type WalletOption = { id: string; name: string; walletId: string };
 type OrgOption = { id: string; name: string };
@@ -36,7 +40,39 @@ export function CreateSection() {
   const [processLoading, setProcessLoading] = useState(false);
   const [processError, setProcessError] = useState<string | null>(null);
   const [hardenedResults, setHardenedResults] = useState<Array<{ originalName: string; hardenedName: string; data: string }>>([]);
+  const [mintingIndex, setMintingIndex] = useState<number | null>(null);
+  const [mintError, setMintError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const { connection } = useConnection();
+  const { publicKey, signTransaction } = useWallet();
+
+  const PHANTOM_PREFIX = "phantom:";
+  const phantomOption: WalletOption | null =
+    publicKey != null
+      ? {
+          id: `${PHANTOM_PREFIX}${publicKey.toBase58()}`,
+          name: `Phantom: ${publicKey.toBase58().slice(0, 4)}…${publicKey.toBase58().slice(-4)}`,
+          walletId: publicKey.toBase58(),
+        }
+      : null;
+  const walletOptions: WalletOption[] = phantomOption ? [phantomOption, ...wallets] : wallets;
+
+  useEffect(() => {
+    if (phantomOption && selectedWalletId !== phantomOption.id) {
+      setSelectedWalletId(phantomOption.id);
+    }
+  }, [phantomOption?.id]);
+  useEffect(() => {
+    if (wallets.length > 0 && !phantomOption && !selectedWalletId) {
+      setSelectedWalletId(wallets[0].id);
+    }
+  }, [wallets, phantomOption, selectedWalletId]);
+  useEffect(() => {
+    if (!phantomOption && selectedWalletId.startsWith(PHANTOM_PREFIX)) {
+      setSelectedWalletId(wallets[0]?.id ?? "");
+    }
+  }, [phantomOption, selectedWalletId, wallets]);
 
   const apiBase = typeof window !== "undefined" ? (process.env.NEXT_PUBLIC_LAVA_API_URL ?? "http://localhost:3001") : "";
 
@@ -69,12 +105,6 @@ export function CreateSection() {
   useEffect(() => {
     loadWallets();
   }, [loadWallets]);
-
-  useEffect(() => {
-    if (wallets.length > 0 && !selectedWalletId) {
-      setSelectedWalletId(wallets[0].id);
-    }
-  }, [wallets, selectedWalletId]);
 
   useEffect(() => {
     if (orgs.length > 0 && !selectedOrgId) {
@@ -224,6 +254,50 @@ export function CreateSection() {
     URL.revokeObjectURL(url);
   };
 
+  const mintHardened = useCallback(
+    async (index: number) => {
+      if (!publicKey || !signTransaction) {
+        setMintError("Connect Phantom to sign the mint (no fee charged).");
+        return;
+      }
+      const f = hardenedResults[index];
+      if (!f) return;
+      setMintError(null);
+      setMintingIndex(index);
+      try {
+        const binary = Uint8Array.from(atob(f.data), (c) => c.charCodeAt(0));
+        const content_hash = await sha256Hex(binary);
+        const res = await fetch(`${apiBase}/mint/commit`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            filename: f.hardenedName,
+            content_hash,
+            wallet: publicKey.toBase58(),
+          }),
+        });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
+        if (!json.success) throw new Error(json.error ?? "Mint failed");
+
+        if (json.serializedTransaction) {
+          const txBytes = Uint8Array.from(atob(json.serializedTransaction), (c) => c.charCodeAt(0));
+          const tx = Transaction.from(txBytes);
+          const signed = await signTransaction(tx);
+          const sig = await connection.sendRawTransaction(signed.serialize(), {
+            skipPreflight: false,
+          });
+          await connection.confirmTransaction(sig, "confirmed");
+        }
+        setMintingIndex(null);
+      } catch (e) {
+        setMintError(e instanceof Error ? e.message : String(e));
+        setMintingIndex(null);
+      }
+    },
+    [apiBase, connection, publicKey, signTransaction, hardenedResults]
+  );
+
   return (
     <div className="flex flex-1 flex-col pt-6 pr-6 pb-6 pl-2 w-full">
       {/* Wallet dropdown */}
@@ -243,7 +317,7 @@ export function CreateSection() {
           )}
         >
           <option value="">Select wallet</option>
-          {wallets.map((w) => (
+          {walletOptions.map((w) => (
             <option key={w.id} value={w.id}>{w.name}</option>
           ))}
         </select>
@@ -358,28 +432,54 @@ export function CreateSection() {
         )}
       </div>
 
-      {/* Download hardened files */}
+      {/* Download hardened files + Mint */}
       {hardenedResults.length > 0 && (
         <div className="mt-4 pt-4 border-t border-border space-y-2">
           <p className="text-sm font-medium">Ready to download</p>
+          {!publicKey && (
+            <div className="flex flex-wrap items-center gap-2">
+              <WalletMultiButton className="h-9! rounded-md! text-sm!" />
+              <span className="text-xs text-muted-foreground">Connect Phantom to mint (you sign, we pay the fee)</span>
+            </div>
+          )}
           <div className="flex flex-wrap gap-2">
             {hardenedResults.map((f, i) => (
-              <Button
-                key={`${f.hardenedName}-${i}`}
-                type="button"
-                size="sm"
-                variant="default"
-                className="gap-1"
-                onClick={() => downloadHardened(f.hardenedName, f.data)}
-              >
-                <Download className="size-4" />
-                {f.hardenedName}
-              </Button>
+              <div key={`${f.hardenedName}-${i}`} className="flex items-center gap-1 rounded-md border border-border bg-muted/30 px-2 py-1.5">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="default"
+                  className="gap-1"
+                  onClick={() => downloadHardened(f.hardenedName, f.data)}
+                >
+                  <Download className="size-4" />
+                  Download
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="gap-1"
+                  onClick={() => mintHardened(i)}
+                  disabled={mintingIndex !== null || !publicKey}
+                  title={!publicKey ? "Connect Phantom to sign mint (free)" : "Sign in Phantom — backend pays fee"}
+                >
+                  {mintingIndex === i ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <Coins className="size-4" />
+                  )}
+                  {mintingIndex === i ? "Minting…" : "Mint"}
+                </Button>
+                <span className="text-xs text-muted-foreground truncate max-w-[120px]" title={f.hardenedName}>
+                  {f.hardenedName}
+                </span>
+              </div>
             ))}
           </div>
         </div>
       )}
-      <ToastError message={processError} onDismiss={() => setProcessError(null)} />
+      <ToastError message={processError ?? mintError} onDismiss={() => { setProcessError(null); setMintError(null); }} />
     </div>
   );
 }

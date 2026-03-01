@@ -7,6 +7,7 @@
  *   POST /transfer
  *   POST /harden/pdf, /harden/pdf/by-id
  *   POST /harden/image, /harden/image/by-id
+ *   POST /mint/commit  — free mint (backend pays fee)
  */
 
 import "dotenv/config";
@@ -16,6 +17,7 @@ import multer from "multer";
 import { getAuthUrl, exchangeCodeAndStore } from "./googleDrive";
 import { executeTransfer } from "./transferJob";
 import { executeHardenPdf, executeHardenImage } from "./hardenJob";
+import { commitMint } from "./mintCommit";
 import { validateSupabaseConnection } from "./supabase";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -42,6 +44,11 @@ interface HardenByIdRequestBody {
   file_ids?: string[];
   user_id?: string;
   seed?: string;
+}
+interface MintCommitRequestBody {
+  filename?: string;
+  content_hash?: string;
+  wallet?: string;
 }
 
 app.get("/health", (_req: Request, res: Response) => {
@@ -181,6 +188,24 @@ app.post("/harden/image/by-id", async (req: Request, res: Response) => {
   sendHardenResult(result, res);
 });
 
+app.post("/mint/commit", async (req: Request, res: Response) => {
+  const body = req.body as MintCommitRequestBody;
+  if (!body.filename?.trim() || !body.content_hash?.trim()) {
+    res.status(400).json({ success: false, error: "Missing filename or content_hash" });
+    return;
+  }
+  const result = await commitMint({
+    filename: body.filename.trim(),
+    content_hash: body.content_hash.trim(),
+    wallet: body.wallet?.trim(),
+  });
+  if (!result.success) {
+    res.status(400).json(result);
+    return;
+  }
+  res.status(200).json(result);
+});
+
 app.use((_req: Request, res: Response) => {
   res.status(404).json({ error: "Not found" });
 });
@@ -207,6 +232,7 @@ async function start(): Promise<void> {
     console.log(`  Transfer      : POST /transfer`);
     console.log(`  Harden PDF    : POST /harden/pdf or /harden/pdf/by-id`);
     console.log(`  Harden image  : POST /harden/image or /harden/image/by-id`);
+    console.log(`  Mint (free)   : POST /mint/commit`);
     console.log("═══════════════════════════════════════════════════════════════");
   });
   // Keep server reference so the process stays alive

@@ -33,6 +33,24 @@ Copy `.env.example` to `.env` and set at least:
 - `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` — required for `/transfer` and `/harden/*/by-id`
 - `GOOGLE_*` — required for OAuth and Drive transfer
 
+**Free mint (optional):** To enable **POST /mint/commit** (backend pays Solana tx fee, user signs in Phantom):
+
+1. Install [Solana CLI](https://docs.solana.com/cli/install-solana-cli-tools) (or use an existing keypair).
+2. Create a keypair (if you don’t have one):
+   ```bash
+   solana keypair new -o ~/.config/solana/id.json
+   ```
+3. Fund it on devnet:
+   ```bash
+   solana airdrop 1 --url devnet
+   ```
+4. In `backend/.env` set:
+   ```
+   SOLANA_RPC_URL=https://api.devnet.solana.com
+   SOLANA_KEYPAIR_PATH=~/.config/solana/id.json
+   ```
+   Use a full path if `~` isn’t expanded (e.g. `/Users/you/.config/solana/id.json`).
+
 Or copy from the project root `.env` if you already have one.
 
 ## Run
@@ -66,6 +84,7 @@ curl http://localhost:3001/health
 | POST | /harden/pdf/by-id | Harden PDFs by storage file IDs (JSON) |
 | POST | /harden/image | Harden images (multipart) |
 | POST | /harden/image/by-id | Harden images by storage file IDs (JSON) |
+| POST | /mint/commit | Free mint: backend pays fee, returns tx for user to sign (JSON: filename, content_hash, wallet?) |
 
 ## Python scripts
 

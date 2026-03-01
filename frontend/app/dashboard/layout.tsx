@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-provider";
+import { SolanaWalletProviderWrapper } from "@/components/providers/solana-wallet-provider";
 
 export default function DashboardLayout({
   children,
@@ -31,5 +32,9 @@ export default function DashboardLayout({
     return null;
   }
 
-  return <>{children}</>;
+  return (
+    <SolanaWalletProviderWrapper>
+      {children}
+    </SolanaWalletProviderWrapper>
+  );
 }
