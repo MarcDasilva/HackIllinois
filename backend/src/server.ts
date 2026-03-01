@@ -16,6 +16,7 @@ import multer from "multer";
 import { getAuthUrl, exchangeCodeAndStore } from "./googleDrive";
 import { executeTransfer } from "./transferJob";
 import { executeHardenPdf, executeHardenImage } from "./hardenJob";
+import { executeSyncFolder } from "./syncJob";
 import { validateSupabaseConnection } from "./supabase";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -42,6 +43,12 @@ interface HardenByIdRequestBody {
   file_ids?: string[];
   user_id?: string;
   seed?: string;
+}
+interface SyncFolderRequestBody {
+  user_id?: string;
+  drive_folder_id?: string;
+  seed?: string;
+  access_token?: string;
 }
 
 app.get("/health", (_req: Request, res: Response) => {
@@ -179,6 +186,26 @@ app.post("/harden/image/by-id", async (req: Request, res: Response) => {
   }
   const result = await executeHardenImage({ file_ids: body.file_ids, user_id: body.user_id, seed: body.seed });
   sendHardenResult(result, res);
+});
+
+app.post("/sync/folder", async (req: Request, res: Response) => {
+  const body = req.body as SyncFolderRequestBody;
+  if (!body.user_id || !body.drive_folder_id) {
+    res.status(400).json({ success: false, error: "Missing user_id or drive_folder_id" });
+    return;
+  }
+  try {
+    const result = await executeSyncFolder({
+      user_id: body.user_id,
+      drive_folder_id: body.drive_folder_id,
+      seed: body.seed,
+      access_token: body.access_token,
+    });
+    res.status(200).json(result);
+  } catch (err) {
+    console.error("[server] Sync folder:", err);
+    res.status(500).json({ success: false, error: String(err) });
+  }
 });
 
 app.use((_req: Request, res: Response) => {

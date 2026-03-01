@@ -125,6 +125,14 @@ function buildDriveClient(tokens: UserTokens, userId: string): drive_v3.Drive {
   return google.drive({ version: "v3", auth });
 }
 
+/** Build a Drive client from a single access token (e.g. from Supabase provider_token). No refresh. */
+function buildDriveClientFromAccessToken(accessToken: string): drive_v3.Drive {
+  const { clientId, clientSecret, redirectUri } = getOAuthConfig();
+  const oauth2Client = new google.auth.OAuth2(clientId, clientSecret, redirectUri);
+  oauth2Client.setCredentials({ access_token: accessToken });
+  return google.drive({ version: "v3", auth: oauth2Client });
+}
+
 export async function getFile(userId: string, fileId: string): Promise<DriveFileMetadata> {
   const tokens = await loadUserTokens(userId);
   const drive = buildDriveClient(tokens, userId);
@@ -168,4 +176,109 @@ export async function moveFile(
     createdTime: f.createdTime ?? undefined,
     modifiedTime: f.modifiedTime ?? undefined,
   };
+}
+
+const FOLDER_MIME = "application/vnd.google-apps.folder";
+
+/** Download file content (binary). Use for non–Google-Docs files (e.g. PDF, images). */
+export async function getFileContent(userId: string, fileId: string): Promise<Buffer> {
+  const tokens = await loadUserTokens(userId);
+  const drive = buildDriveClient(tokens, userId);
+  return getFileContentWithDrive(drive, fileId);
+}
+
+/** Download file content using a Drive client (e.g. from access token). */
+export async function getFileContentWithDrive(drive: drive_v3.Drive, fileId: string): Promise<Buffer> {
+  const res = await drive.files.get(
+    { fileId, alt: "media" },
+    { responseType: "arraybuffer" }
+  );
+  const data = res.data as ArrayBuffer | undefined;
+  if (!data) throw new Error("Empty response from Drive");
+  return Buffer.from(data);
+}
+
+export async function getFileContentWithToken(accessToken: string, fileId: string): Promise<Buffer> {
+  const drive = buildDriveClientFromAccessToken(accessToken);
+  return getFileContentWithDrive(drive, fileId);
+}
+
+/** List files (no folders) in a Drive folder. */
+export async function listFilesInFolder(
+  userId: string,
+  folderId: string
+): Promise<DriveFileMetadata[]> {
+  const tokens = await loadUserTokens(userId);
+  const drive = buildDriveClient(tokens, userId);
+  return listFilesInFolderWithDrive(drive, folderId);
+}
+
+export async function listFilesInFolderWithDrive(
+  drive: drive_v3.Drive,
+  folderId: string
+): Promise<DriveFileMetadata[]> {
+  const q = `'${folderId}' in parents and trashed=false and mimeType!='${FOLDER_MIME}'`;
+  const res = await drive.files.list({
+    q,
+    fields: "files(id, name, mimeType, parents, webViewLink, createdTime, modifiedTime)",
+    pageSize: 100,
+    orderBy: "name",
+  });
+  const files = res.data.files ?? [];
+  return files.map((f) => ({
+    id: f.id ?? "",
+    name: f.name ?? "",
+    mimeType: f.mimeType ?? "",
+    parents: f.parents ?? [],
+    webViewLink: f.webViewLink ?? undefined,
+    createdTime: f.createdTime ?? undefined,
+    modifiedTime: f.modifiedTime ?? undefined,
+  }));
+}
+
+export async function listFilesInFolderWithToken(
+  accessToken: string,
+  folderId: string
+): Promise<DriveFileMetadata[]> {
+  const drive = buildDriveClientFromAccessToken(accessToken);
+  return listFilesInFolderWithDrive(drive, folderId);
+}
+
+/** Overwrite file content (keeps same file id and name). */
+export async function updateFileContent(
+  userId: string,
+  fileId: string,
+  buffer: Buffer,
+  mimeType: string
+): Promise<void> {
+  const tokens = await loadUserTokens(userId);
+  const drive = buildDriveClient(tokens, userId);
+  return updateFileContentWithDrive(drive, fileId, buffer, mimeType);
+}
+
+export async function updateFileContentWithDrive(
+  drive: drive_v3.Drive,
+  fileId: string,
+  buffer: Buffer,
+  mimeType: string
+): Promise<void> {
+  const { Readable } = await import("stream");
+  await drive.files.update({
+    fileId,
+    requestBody: {},
+    media: {
+      mimeType,
+      body: Readable.from(buffer),
+    },
+  });
+}
+
+export async function updateFileContentWithToken(
+  accessToken: string,
+  fileId: string,
+  buffer: Buffer,
+  mimeType: string
+): Promise<void> {
+  const drive = buildDriveClientFromAccessToken(accessToken);
+  return updateFileContentWithDrive(drive, fileId, buffer, mimeType);
 }

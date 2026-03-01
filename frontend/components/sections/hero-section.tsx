@@ -2,6 +2,7 @@
 
 import { useRef, useState, useCallback, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
+import Link from "next/link";
 import {
   motion,
   useScroll,
@@ -86,7 +87,8 @@ export function HeroSection() {
             typeof window !== "undefined"
               ? `${window.location.origin}/auth/callback`
               : undefined,
-          scopes: "https://www.googleapis.com/auth/drive.readonly",
+          // Full Drive scope required for Sync (download + re-upload). readonly would cause "insufficient authentication scope" on update.
+          scopes: "https://www.googleapis.com/auth/drive",
           queryParams: {
             access_type: "offline",
             prompt: "consent",
@@ -137,13 +139,13 @@ export function HeroSection() {
       />
       {/* Logo emblem and wordmark above cards */}
       <div className="relative z-10 flex items-center justify-center gap-12 md:gap-16 shrink-0">
-        <a
-          href="#"
+        <Link
+          href="/wall"
           className="text-lg font-serif text-muted-foreground hover:text-foreground transition-colors shrink-0"
           data-clickable
         >
           The Wall
-        </a>
+        </Link>
         <div className="flex flex-col items-center justify-center gap-2 pointer-events-none">
           <div className="w-[min(24vmin,140px)] h-[min(24vmin,140px)] md:w-[min(16vmin,120px)] md:h-[min(16vmin,120px)] relative">
             {/* Static placeholder until metallic effect is ready — avoids flash on load */}
@@ -232,12 +234,12 @@ export function HeroSection() {
       </div>
 
       <motion.div
-        className="absolute inset-0 flex flex-col items-center justify-center gap-8 z-10 pt-24 md:pt-32"
+        className="absolute inset-0 flex flex-col items-center justify-center gap-8 z-10 pt-24 md:pt-32 pointer-events-none"
         initial={{ opacity: 0, y: 30 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 1, delay: 0.8 }}
       >
-        <h1 className="text-5xl md:text-7xl lg:text-8xl font-serif text-center text-foreground mix-blend-difference pointer-events-none">
+        <h1 className="text-5xl md:text-7xl lg:text-8xl font-serif text-center text-foreground mix-blend-difference">
           Identity stays{" "}
           <em
             className="italic font-serif font-bold tracking-tight mix-blend-normal"
