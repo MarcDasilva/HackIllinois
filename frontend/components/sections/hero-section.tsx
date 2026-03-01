@@ -1,9 +1,12 @@
 "use client";
 
-import { useRef, useState } from "react";
-import { motion, useScroll, useTransform } from "framer-motion";
+import { useRef, useState, useCallback, useEffect } from "react";
+import { useSearchParams } from "next/navigation";
+import { motion, useScroll, useTransform, AnimatePresence } from "framer-motion";
 import { ChevronDown } from "lucide-react";
 import MetallicPaint from "@/components/MetallicPaint";
+import { AuthErrorToast } from "@/components/auth-error-toast";
+import { createClient } from "@/lib/supabase/client";
 
 const images = [
   "/premium_photo-1670573801174-1ab41ec2afa0.avif",
@@ -47,6 +50,42 @@ function GoogleLogo({ className }: { className?: string }) {
 export function HeroSection() {
   const containerRef = useRef<HTMLDivElement>(null);
   const [metallicReady, setMetallicReady] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const searchParams = useSearchParams();
+
+  // Sync callback redirect error into state so we can show and dismiss it
+  const callbackError = searchParams.get("error");
+  useEffect(() => {
+    if (callbackError === "auth_callback") {
+      setAuthError("Sign-in failed. Please try again.");
+    }
+  }, [callbackError]);
+
+  const dismissError = useCallback(() => setAuthError(null), []);
+
+  const handleSignInWithGoogle = useCallback(async () => {
+    setAuthError(null);
+    try {
+      const supabase = createClient();
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          // Where Supabase sends the user after OAuth. Add this exact URL in Supabase Dashboard → Auth → URL Configuration → Redirect URLs.
+          redirectTo: typeof window !== "undefined" ? `${window.location.origin}/auth/callback` : undefined,
+        },
+      });
+      if (error) {
+        setAuthError(error.message);
+        return;
+      }
+      if (data?.url) {
+        window.location.href = data.url;
+      }
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : "Sign-in failed. Please try again.");
+    }
+  }, []);
+
   const { scrollYProgress } = useScroll({
     target: containerRef,
     offset: ["start start", "end start"],
@@ -173,14 +212,25 @@ export function HeroSection() {
         </h1>
         <a
           href="#"
+          role="button"
           className="inline-flex items-center gap-2.5 px-6 py-3 rounded-3xl bg-black border-2 border-white text-white text-lg font-medium hover:bg-white hover:text-black transition-colors pointer-events-auto [&_svg]:text-white [&:hover_svg]:text-black"
           style={{ fontFamily: 'Helvetica, Arial, sans-serif' }}
           data-clickable
+          onClick={(e) => {
+            e.preventDefault();
+            handleSignInWithGoogle();
+          }}
         >
           <GoogleLogo />
           Sign in with Google
         </a>
       </motion.div>
+
+      <AnimatePresence>
+        {authError && (
+          <AuthErrorToast message={authError} onDismiss={dismissError} />
+        )}
+      </AnimatePresence>
 
       <motion.div
         className="absolute bottom-8 left-1/2 -translate-x-1/2"
