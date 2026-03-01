@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { ArrowDownLeft, ArrowUpRight, Clock, Coins } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, Clock, Coins, Sparkles } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/lib/auth/auth-provider";
 import { cn } from "@/lib/utils";
@@ -23,6 +23,7 @@ function TxIcon({ type }: { type: string }) {
   if (type === "receive") return <ArrowDownLeft className="size-4 text-green-400 shrink-0" />;
   if (type === "transfer") return <ArrowUpRight className="size-4 text-red-400 shrink-0" />;
   if (type === "fee") return <Coins className="size-4 text-yellow-400 shrink-0" />;
+  if (type === "minted") return <Sparkles className="size-4 text-violet-400 shrink-0" />;
   return <Clock className="size-4 text-muted-foreground shrink-0" />;
 }
 
@@ -51,6 +52,12 @@ export function WalletHistorySection() {
 
   useEffect(() => { load(); }, [load]);
 
+  useEffect(() => {
+    const onUpdate = () => load();
+    window.addEventListener("wallet-history-update", onUpdate);
+    return () => window.removeEventListener("wallet-history-update", onUpdate);
+  }, [load]);
+
   return (
     <div className="flex flex-1 flex-col pt-6 pr-4 pb-6 pl-4 w-full border-l border-border">
       <h2 className="text-sm font-medium text-muted-foreground mb-3">Wallet History</h2>
@@ -78,6 +85,7 @@ export function WalletHistorySection() {
                     tx.type === "receive" && "text-green-400",
                     tx.type === "transfer" && "text-red-400",
                     tx.type === "fee" && "text-yellow-400",
+                    tx.type === "minted" && "text-violet-400",
                   )}>
                     {tx.type}
                   </span>
