@@ -6,12 +6,12 @@
   "scripts": {
     "build": "tsc",
     "dev": "ts-node --project tsconfig.json src/index.ts",
-    "dev:server": "ts-node --project tsconfig.json src/server.ts",
-    "dev:client": "npm run dev --prefix client",
+    "dev:server": "npm run dev --prefix backend",
+    "dev:client": "npm run dev --prefix frontend",
     "dev:all": "concurrently --names oracle,server,ui --prefix-colors cyan,yellow,magenta \"npm run dev\" \"npm run dev:server\" \"npm run dev:client\"",
     "bootstrap:tokens": "ts-node scripts/bootstrap.ts",
     "start": "node dist/index.js",
-    "start:server": "node dist/server.js",
+    "start:server": "npm run start --prefix backend",
     "verify": "ts-node --project tsconfig.json src/verifyMemo.ts"
   },
   "engines": {
@@ -21,12 +21,9 @@
     "@solana/spl-token": "^0.4.14",
     "@solana/web3.js": "^1.95.3",
     "@supabase/supabase-js": "^2.98.0",
-    "dotenv": "^16.4.5",
-    "express": "^5.2.1",
-    "googleapis": "^171.4.0"
+    "dotenv": "^16.4.5"
   },
   "devDependencies": {
-    "@types/express": "^5.0.6",
     "@types/node": "^20.14.0",
     "concurrently": "^9.2.1",
     "ts-node": "^10.9.2",

@@ -16,6 +16,7 @@ type AuthState = {
   session: Session | null;
   user: User | null;
   loading: boolean;
+  providerToken: string | null;
   signOut: () => Promise<void>;
 };
 
@@ -63,6 +64,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     session,
     user: session?.user ?? null,
     loading,
+    providerToken: session?.provider_token ?? null,
     signOut,
   };
 

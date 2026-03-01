@@ -30,6 +30,7 @@ hardened*.pdf
 log.json
 
 # Python
+.venv/
 __pycache__/
 *.pyc
 *.pyo

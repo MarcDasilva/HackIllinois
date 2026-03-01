@@ -1,19 +1,20 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { File as FileIcon, Plus, X } from "lucide-react";
+import { File as FileIcon, Plus, X, Send, Download, Loader2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/lib/auth/auth-provider";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { STORAGE_DRAG_TYPE, type StorageDragPayload } from "@/lib/drag-types";
+import { ToastError } from "@/components/dashboard/toast-error";
 
 type WalletOption = { id: string; name: string; walletId: string };
 type OrgOption = { id: string; name: string };
 
 export type UploadItem =
   | { kind: "local"; file: File }
-  | { kind: "storage"; id: string; name: string; size: number | null };
+  | { kind: "storage"; id: string; name: string; size: number | null; mime_type?: string | null };
 
 function getSupabase() {
   try {
@@ -32,7 +33,12 @@ export function CreateSection() {
   const [items, setItems] = useState<UploadItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [dragActive, setDragActive] = useState(false);
+  const [processLoading, setProcessLoading] = useState(false);
+  const [processError, setProcessError] = useState<string | null>(null);
+  const [hardenedResults, setHardenedResults] = useState<Array<{ originalName: string; hardenedName: string; data: string }>>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const apiBase = typeof window !== "undefined" ? (process.env.NEXT_PUBLIC_LAVA_API_URL ?? "http://localhost:3001") : "";
 
   const loadWallets = useCallback(async () => {
     const supabase = getSupabase();
@@ -101,7 +107,7 @@ export function CreateSection() {
         setItems((prev) => {
           const exists = prev.some((i) => i.kind === "storage" && i.id === payload.id);
           if (exists) return prev;
-          return [...prev, { kind: "storage", id: payload.id, name: payload.name, size: payload.size }];
+          return [...prev, { kind: "storage", id: payload.id, name: payload.name, size: payload.size, mime_type: payload.mime_type ?? null }];
         });
         return;
       } catch {
@@ -124,6 +130,99 @@ export function CreateSection() {
   function itemName(item: UploadItem) {
     return item.kind === "local" ? item.file.name : item.name;
   }
+
+  function isPdf(item: UploadItem): boolean {
+    if (item.kind === "local") return item.file.type === "application/pdf" || item.file.name.toLowerCase().endsWith(".pdf");
+    return item.mime_type === "application/pdf" || item.name.toLowerCase().endsWith(".pdf");
+  }
+
+  function isImage(item: UploadItem): boolean {
+    if (item.kind === "local") return item.file.type.startsWith("image/");
+    return (item.mime_type?.startsWith("image/") ?? false) || /\.(jpe?g|png|gif|webp)$/i.test(item.name);
+  }
+
+  const processableItems = items.filter((i) => isPdf(i) || isImage(i));
+
+  const processFiles = async () => {
+    if (!user?.id || processableItems.length === 0) return;
+    setProcessError(null);
+    setProcessLoading(true);
+    setHardenedResults([]);
+    const allResults: Array<{ originalName: string; hardenedName: string; data: string }> = [];
+    try {
+      const localPdfs = items.filter((i): i is UploadItem & { kind: "local" } => i.kind === "local" && isPdf(i));
+      const localImages = items.filter((i): i is UploadItem & { kind: "local" } => i.kind === "local" && isImage(i));
+      const storagePdfs = items.filter((i) => i.kind === "storage" && isPdf(i));
+      const storageImages = items.filter((i) => i.kind === "storage" && isImage(i));
+
+      if (localPdfs.length > 0) {
+        const form = new FormData();
+        localPdfs.forEach((i) => i.kind === "local" && form.append("files", i.file));
+        const res = await fetch(`${apiBase}/harden/pdf`, { method: "POST", body: form });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
+        if (json.success && json.files?.length) allResults.push(...json.files);
+      }
+      if (localImages.length > 0) {
+        const form = new FormData();
+        localImages.forEach((i) => i.kind === "local" && form.append("files", i.file));
+        const res = await fetch(`${apiBase}/harden/image`, { method: "POST", body: form });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
+        if (json.success && json.files?.length) allResults.push(...json.files);
+      }
+      if (storagePdfs.length > 0) {
+        const fileIds = storagePdfs.map((i) => (i.kind === "storage" ? i.id : null)).filter((id): id is string => id != null);
+        const res = await fetch(`${apiBase}/harden/pdf/by-id`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ file_ids: fileIds, user_id: user.id }),
+        });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
+        if (json.success && json.files?.length) allResults.push(...json.files);
+      }
+      if (storageImages.length > 0) {
+        const fileIds = storageImages.map((i) => (i.kind === "storage" ? i.id : null)).filter((id): id is string => id != null);
+        const res = await fetch(`${apiBase}/harden/image/by-id`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ file_ids: fileIds, user_id: user.id }),
+        });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
+        if (json.success && json.files?.length) allResults.push(...json.files);
+      }
+      setHardenedResults(allResults);
+    } catch (e) {
+      setProcessError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setProcessLoading(false);
+    }
+  };
+
+  const downloadHardened = (hardenedName: string, base64Data: string) => {
+    const ext = hardenedName.split(".").pop()?.toLowerCase() ?? "";
+    const mimeTypes: Record<string, string> = {
+      pdf: "application/pdf",
+      jpg: "image/jpeg",
+      jpeg: "image/jpeg",
+      png: "image/png",
+      gif: "image/gif",
+      webp: "image/webp",
+    };
+    const mime = mimeTypes[ext] ?? "application/octet-stream";
+    const binary = atob(base64Data);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const blob = new Blob([bytes], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = hardenedName;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <div className="flex flex-1 flex-col pt-6 pr-6 pb-6 pl-2 w-full">
@@ -199,7 +298,7 @@ export function CreateSection() {
           type="file"
           multiple
           className="hidden"
-          accept="*"
+          accept="image/*,application/pdf"
           onChange={(e) => addLocalFiles(e.target.files)}
         />
         <Plus className="size-10 text-muted-foreground" />
@@ -241,6 +340,46 @@ export function CreateSection() {
           ))}
         </ul>
       )}
+
+      {/* Process files button — always visible, disabled until at least one image/PDF */}
+      <div className="mt-4 space-y-1">
+        <Button
+          type="button"
+          size="default"
+          className="w-full gap-2"
+          onClick={processFiles}
+          disabled={processLoading || processableItems.length === 0}
+        >
+          {processLoading ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+          {processLoading ? "Processing…" : "Process files"}
+        </Button>
+        {processableItems.length === 0 && (
+          <p className="text-xs text-muted-foreground">Upload an image or PDF to enable.</p>
+        )}
+      </div>
+
+      {/* Download hardened files */}
+      {hardenedResults.length > 0 && (
+        <div className="mt-4 pt-4 border-t border-border space-y-2">
+          <p className="text-sm font-medium">Ready to download</p>
+          <div className="flex flex-wrap gap-2">
+            {hardenedResults.map((f, i) => (
+              <Button
+                key={`${f.hardenedName}-${i}`}
+                type="button"
+                size="sm"
+                variant="default"
+                className="gap-1"
+                onClick={() => downloadHardened(f.hardenedName, f.data)}
+              >
+                <Download className="size-4" />
+                {f.hardenedName}
+              </Button>
+            ))}
+          </div>
+        </div>
+      )}
+      <ToastError message={processError} onDismiss={() => setProcessError(null)} />
     </div>
   );
 }

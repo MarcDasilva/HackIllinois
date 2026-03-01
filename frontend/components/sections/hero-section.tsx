@@ -86,6 +86,11 @@ export function HeroSection() {
             typeof window !== "undefined"
               ? `${window.location.origin}/auth/callback`
               : undefined,
+          scopes: "https://www.googleapis.com/auth/drive.readonly",
+          queryParams: {
+            access_type: "offline",
+            prompt: "consent",
+          },
         },
       });
       if (error) {

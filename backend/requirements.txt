@@ -1,0 +1,13 @@
+# Required for PDF hardening (backend/pdf_hardener.py)
+PyMuPDF>=1.23.0
+Pillow>=10.0.0
+# Use numpy>=1.24; allow 2.x in venv (has wheels for Python 3.13; avoids source build)
+numpy>=1.24.0
+
+# Optional — adversarial / PGD attack (--attack pgd)
+# torch>=2.0.0
+# torchvision>=0.15.0
+# transformers>=4.30.0
+
+# Optional — OCR evaluation (--eval-ocr)
+# pytesseract>=0.3.10

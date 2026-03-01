@@ -61,3 +61,5 @@ create policy "users can insert own wallet history"
 create policy "users can delete own wallet history"
   on public.wallet_history for delete to authenticated
   using (user_id = auth.uid());
+alter table public.organizations
+  add column if not exists org_code text;

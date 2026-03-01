@@ -1,16 +1,27 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronDown, ChevronRight, File, FilePlus, Folder, FolderOpen, FolderPlus, Trash2, X } from "lucide-react";
+import { ChevronDown, ChevronRight, File, FilePlus, Folder, FolderOpen, FolderPlus, Trash2, X, Send, Download, Loader2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/lib/auth/auth-provider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { STORAGE_DRAG_TYPE, type StorageDragPayload } from "@/lib/drag-types";
+import { GoogleDriveSection } from "@/components/dashboard/google-drive-section";
+import { ToastError } from "@/components/dashboard/toast-error";
+
+type Tab = "local" | "drive";
 
 type FolderRow = { id: string; name: string; parent_id: string | null };
-type FileRow = { id: string; name: string; folder_id: string | null; size: number | null; mime_type: string | null };
+type FileRow = {
+  id: string;
+  name: string;
+  folder_id: string | null;
+  size: number | null;
+  mime_type: string | null;
+  storage_path?: string | null;
+};
 
 function getSupabase() {
   try { return createClient(); } catch { return null; }
@@ -29,12 +40,25 @@ type FolderNodeProps = {
   files: FileRow[];
   depth: number;
   selectedFolderId: string | null;
+  selectedFileIds: Set<string>;
+  onToggleFile: (id: string) => void;
   onSelect: (id: string | null) => void;
   onDelete: (id: string) => void;
   onDeleteFile: (id: string) => void;
 };
 
-function FolderNode({ folder, folders, files, depth, selectedFolderId, onSelect, onDelete, onDeleteFile }: FolderNodeProps) {
+function FolderNode({
+  folder,
+  folders,
+  files,
+  depth,
+  selectedFolderId,
+  selectedFileIds,
+  onToggleFile,
+  onSelect,
+  onDelete,
+  onDeleteFile,
+}: FolderNodeProps) {
   const [open, setOpen] = useState(false);
   const children = folders.filter((f) => f.parent_id === folder.id);
   const folderFiles = files.filter((f) => f.folder_id === folder.id);
@@ -82,13 +106,22 @@ function FolderNode({ folder, folders, files, depth, selectedFolderId, onSelect,
               files={files}
               depth={depth + 1}
               selectedFolderId={selectedFolderId}
+              selectedFileIds={selectedFileIds}
+              onToggleFile={onToggleFile}
               onSelect={onSelect}
               onDelete={onDelete}
               onDeleteFile={onDeleteFile}
             />
           ))}
           {folderFiles.map((file) => (
-            <FileNode key={file.id} file={file} depth={depth + 1} onDelete={onDeleteFile} />
+            <FileNode
+              key={file.id}
+              file={file}
+              depth={depth + 1}
+              selected={selectedFileIds.has(file.id)}
+              onToggle={() => onToggleFile(file.id)}
+              onDelete={onDeleteFile}
+            />
           ))}
         </ul>
       )}
@@ -96,7 +129,19 @@ function FolderNode({ folder, folders, files, depth, selectedFolderId, onSelect,
   );
 }
 
-function FileNode({ file, depth, onDelete }: { file: FileRow; depth: number; onDelete: (id: string) => void }) {
+function FileNode({
+  file,
+  depth,
+  selected,
+  onToggle,
+  onDelete,
+}: {
+  file: FileRow;
+  depth: number;
+  selected: boolean;
+  onToggle: () => void;
+  onDelete: (id: string) => void;
+}) {
   const [dragging, setDragging] = useState(false);
 
   const handleDragStart = (e: React.DragEvent) => {
@@ -119,7 +164,16 @@ function FileNode({ file, depth, onDelete }: { file: FileRow; depth: number; onD
       className="group flex items-center gap-1 px-1 py-1 text-sm text-muted-foreground hover:bg-muted/30 rounded-md cursor-grab active:cursor-grabbing"
       style={{ paddingLeft: `${depth * 12 + 4}px` }}
     >
-      <span className="w-4 shrink-0" />
+      <span className="w-4 shrink-0 flex items-center justify-center">
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={(e) => { e.stopPropagation(); onToggle(); }}
+          onClick={(e) => e.stopPropagation()}
+          className="rounded border-border"
+          aria-label={`Select ${file.name}`}
+        />
+      </span>
       <File className="size-4 shrink-0 text-white" />
       <span className="flex-1 truncate">{file.name}</span>
       {!dragging && file.size ? <span className="text-xs text-muted-foreground/60 shrink-0 mr-1">{formatSize(file.size)}</span> : null}
@@ -141,6 +195,7 @@ function FileNode({ file, depth, onDelete }: { file: FileRow; depth: number; onD
 
 export function FileStorageSection() {
   const { user } = useAuth();
+  const [tab, setTab] = useState<Tab>("local");
   const [folders, setFolders] = useState<FolderRow[]>([]);
   const [files, setFiles] = useState<FileRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -148,17 +203,44 @@ export function FileStorageSection() {
   const [newFolderName, setNewFolderName] = useState("");
   const [showNewFolder, setShowNewFolder] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [selectedFileIds, setSelectedFileIds] = useState<Set<string>>(new Set());
+  const [submitLoading, setSubmitLoading] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [hardenedResults, setHardenedResults] = useState<Array<{ originalName: string; hardenedName: string; data: string }>>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const apiBase = typeof window !== "undefined" ? (process.env.NEXT_PUBLIC_LAVA_API_URL ?? "http://localhost:3001") : "";
+
+  const toggleFileSelection = useCallback((id: string) => {
+    setSelectedFileIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
 
   const load = useCallback(async () => {
     const supabase = getSupabase();
     if (!supabase || !user?.id) { setLoading(false); return; }
-    const [fRes, fiRes] = await Promise.all([
-      supabase.from("folders").select("id, name, parent_id").eq("user_id", user.id).order("name"),
-      supabase.from("storage_files").select("id, name, folder_id, size, mime_type").eq("user_id", user.id).order("name"),
-    ]);
+    setError(null);
+    const fRes = await supabase.from("folders").select("id, name, parent_id").eq("user_id", user.id).order("name");
+    if (fRes.error) setError(fRes.error.message);
     setFolders(fRes.data ?? []);
-    setFiles(fiRes.data ?? []);
+
+    let fiRes = await supabase.from("storage_files").select("id, name, folder_id, size, mime_type, storage_path").eq("user_id", user.id).order("name");
+    if (fiRes.error) {
+      fiRes = await supabase.from("storage_files").select("id, name, folder_id, size, mime_type").eq("user_id", user.id).order("name");
+      if (fiRes.error) {
+        setError(fiRes.error.message);
+        setFiles([]);
+      } else {
+        setFiles((fiRes.data ?? []).map((r) => ({ ...r, storage_path: null })));
+        setError("Run migration 20260228180000_add_storage_path to enable uploads.");
+      }
+    } else {
+      setFiles(fiRes.data ?? []);
+    }
     setLoading(false);
   }, [user?.id]);
 
@@ -192,24 +274,120 @@ export function FileStorageSection() {
     if (!picked?.length) return;
     const supabase = getSupabase();
     if (!supabase || !user?.id) return;
-    const rows = Array.from(picked).map((f) => ({
-      user_id: user.id,
-      folder_id: selectedFolderId ?? null,
-      name: f.name,
-      size: f.size,
-      mime_type: f.type || null,
-    }));
-    const { error: e } = await supabase.from("storage_files").insert(rows);
-    if (e) { setError(e.message); return; }
-    if (fileInputRef.current) fileInputRef.current.value = "";
-    load();
+    setError(null);
+    setUploading(true);
+    const bucket = "uploads";
+    try {
+      for (const file of Array.from(picked)) {
+        const { data: row, error: insertErr } = await supabase
+          .from("storage_files")
+          .insert({
+            user_id: user.id,
+            folder_id: selectedFolderId ?? null,
+            name: file.name,
+            size: file.size,
+            mime_type: file.type || null,
+          })
+          .select("id")
+          .single();
+        if (insertErr) {
+          setError(insertErr.message);
+          break;
+        }
+        const fileId = (row as { id: string }).id;
+        const storagePath = `${user.id}/${fileId}/${encodeURIComponent(file.name)}`;
+        const { error: uploadErr } = await supabase.storage
+          .from(bucket)
+          .upload(storagePath, file, { upsert: true });
+        if (uploadErr) {
+          setError(`Upload failed: ${uploadErr.message}. Ensure bucket "${bucket}" exists in Supabase Storage.`);
+          await supabase.from("storage_files").delete().eq("id", fileId);
+          break;
+        }
+        await supabase
+          .from("storage_files")
+          .update({ storage_path: storagePath })
+          .eq("id", fileId);
+      }
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      load();
+    } finally {
+      setUploading(false);
+    }
   };
 
   const deleteFile = async (id: string) => {
     const supabase = getSupabase();
     if (!supabase) return;
+    setSelectedFileIds((prev) => { const n = new Set(prev); n.delete(id); return n; });
     await supabase.from("storage_files").delete().eq("id", id);
     load();
+  };
+
+  const canHarden = (f: FileRow) => f.storage_path && (f.mime_type === "application/pdf" || (f.mime_type?.startsWith("image/") ?? false));
+  const selectedFiles = files.filter((f) => selectedFileIds.has(f.id));
+  const selectedHardenable = selectedFiles.filter(canHarden);
+  const pdfIds = selectedHardenable.filter((f) => f.mime_type === "application/pdf").map((f) => f.id);
+  const imageIds = selectedHardenable.filter((f) => f.mime_type?.startsWith("image/")).map((f) => f.id);
+
+  const submitHarden = async () => {
+    if (!user?.id || (!pdfIds.length && !imageIds.length)) return;
+    setError(null);
+    setSubmitLoading(true);
+    setHardenedResults([]);
+    const allResults: Array<{ originalName: string; hardenedName: string; data: string }> = [];
+    try {
+      if (pdfIds.length) {
+        const res = await fetch(`${apiBase}/harden/pdf/by-id`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ file_ids: pdfIds, user_id: user.id }),
+        });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
+        if (json.success && json.files?.length) allResults.push(...json.files);
+        else if (json.error) throw new Error(json.error);
+      }
+      if (imageIds.length) {
+        const res = await fetch(`${apiBase}/harden/image/by-id`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ file_ids: imageIds, user_id: user.id }),
+        });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
+        if (json.success && json.files?.length) allResults.push(...json.files);
+        else if (json.error) throw new Error(json.error);
+      }
+      setHardenedResults(allResults);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSubmitLoading(false);
+    }
+  };
+
+  const downloadHardened = (hardenedName: string, base64Data: string) => {
+    const ext = hardenedName.split(".").pop()?.toLowerCase() ?? "";
+    const mimeTypes: Record<string, string> = {
+      pdf: "application/pdf",
+      jpg: "image/jpeg",
+      jpeg: "image/jpeg",
+      png: "image/png",
+      gif: "image/gif",
+      webp: "image/webp",
+    };
+    const mime = mimeTypes[ext] ?? "application/octet-stream";
+    const binary = atob(base64Data);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const blob = new Blob([bytes], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = hardenedName;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const rootFolders = folders.filter((f) => f.parent_id === null);
@@ -217,106 +395,182 @@ export function FileStorageSection() {
 
   return (
     <div className="flex flex-1 flex-col pt-6 pr-4 pb-6 pl-4 w-full border-l border-border">
-      {/* Header */}
+      {/* Tab bar */}
       <div className="flex items-center justify-between mb-3">
-        <h2 className="text-sm font-medium text-muted-foreground">
-          Storage
-          {selectedFolderId && (
+        <div className="flex gap-1 rounded-md bg-muted/50 p-0.5">
+          {(["local", "drive"] as Tab[]).map((t) => (
             <button
-              className="ml-2 text-xs text-muted-foreground/60 hover:text-foreground"
-              onClick={() => setSelectedFolderId(null)}
-              title="Deselect folder"
+              key={t}
+              onClick={() => setTab(t)}
+              className={cn(
+                "px-3 py-1 rounded text-xs font-medium transition-colors",
+                tab === t
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
             >
-              <X className="inline size-3" />
+              {t === "local" ? "Storage" : "Drive"}
             </button>
-          )}
-        </h2>
-        <div className="flex items-center gap-1">
-          {/* Add file button */}
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6 text-muted-foreground hover:text-foreground"
-            onClick={() => fileInputRef.current?.click()}
-            title={selectedFolderId ? "Add file to selected folder" : "Add file to root"}
-          >
-            <FilePlus className="size-4" />
-          </Button>
-          {/* New folder button */}
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6 text-muted-foreground hover:text-foreground"
-            onClick={() => { setShowNewFolder((v) => !v); setError(null); }}
-            aria-label="New folder"
-          >
-            {showNewFolder ? <X className="size-4" /> : <FolderPlus className="size-4" />}
-          </Button>
+          ))}
         </div>
+
+        {tab === "local" && (
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="gap-1.5 h-8 text-muted-foreground hover:text-foreground"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              title={selectedFolderId ? "Add file to selected folder" : "Add file to root"}
+            >
+              {uploading ? <Loader2 className="size-4 animate-spin" /> : <FilePlus className="size-4" />}
+              Upload files
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 text-muted-foreground hover:text-foreground"
+              onClick={() => { setShowNewFolder((v) => !v); setError(null); }}
+              aria-label="New folder"
+              title="New folder"
+            >
+              {showNewFolder ? <X className="size-4" /> : <FolderPlus className="size-4" />}
+            </Button>
+          </div>
+        )}
       </div>
 
-      <input
-        ref={fileInputRef}
-        type="file"
-        multiple
-        className="hidden"
-        onChange={(e) => addFiles(e.target.files)}
-      />
-
-      {showNewFolder && (
-        <div className="flex gap-2 mb-3">
-          <Input
-            value={newFolderName}
-            onChange={(e) => setNewFolderName(e.target.value)}
-            placeholder={selectedFolderId ? "Subfolder name…" : "Folder name…"}
-            className="h-8 text-sm rounded-md"
-            onKeyDown={(e) => { if (e.key === "Enter") createFolder(); if (e.key === "Escape") setShowNewFolder(false); }}
-            autoFocus
-          />
-          <Button type="button" size="sm" className="h-8 shrink-0" onClick={createFolder}>
-            Add
-          </Button>
-        </div>
-      )}
-
-      {error && <p className="text-destructive text-xs mb-2">{error}</p>}
-
-      {selectedFolderId && (
-        <p className="text-xs text-muted-foreground/60 mb-2">
-          Files and folders added inside selected folder. <button className="underline hover:text-foreground" onClick={() => setSelectedFolderId(null)}>Clear</button>
-        </p>
-      )}
-
-      {loading ? (
-        <p className="text-xs text-muted-foreground">Loading…</p>
-      ) : folders.length === 0 && files.length === 0 ? (
-        <div className="flex flex-col items-center justify-center flex-1 text-muted-foreground gap-2 py-12">
-          <Folder className="size-8 opacity-30" />
-          <p className="text-sm">No files yet</p>
-          <p className="text-xs opacity-60">Use the icons above to add files or folders</p>
-        </div>
+      {tab === "drive" ? (
+        <GoogleDriveSection />
       ) : (
-        <ul className="flex flex-col gap-0.5">
-          {rootFolders.map((folder) => (
-            <FolderNode
-              key={folder.id}
-              folder={folder}
-              folders={folders}
-              files={files}
-              depth={0}
-              selectedFolderId={selectedFolderId}
-              onSelect={setSelectedFolderId}
-              onDelete={deleteFolder}
-              onDeleteFile={deleteFile}
-            />
-          ))}
-          {rootFiles.map((file) => (
-            <FileNode key={file.id} file={file} depth={0} onDelete={deleteFile} />
-          ))}
-        </ul>
+        <>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept="image/*,application/pdf"
+            className="hidden"
+            onChange={(e) => addFiles(e.target.files)}
+          />
+
+          {showNewFolder && (
+            <div className="flex gap-2 mb-3">
+              <Input
+                value={newFolderName}
+                onChange={(e) => setNewFolderName(e.target.value)}
+                placeholder={selectedFolderId ? "Subfolder name…" : "Folder name…"}
+                className="h-8 text-sm rounded-md"
+                onKeyDown={(e) => { if (e.key === "Enter") createFolder(); if (e.key === "Escape") setShowNewFolder(false); }}
+                autoFocus
+              />
+              <Button type="button" size="sm" className="h-8 shrink-0" onClick={createFolder}>Add</Button>
+            </div>
+          )}
+
+          {selectedFolderId && (
+            <p className="text-xs text-muted-foreground/60 mb-2">
+              Files and folders added inside selected folder.{" "}
+              <button className="underline hover:text-foreground" onClick={() => setSelectedFolderId(null)}>Clear</button>
+            </p>
+          )}
+
+          {loading ? (
+            <p className="text-xs text-muted-foreground">Loading…</p>
+          ) : folders.length === 0 && files.length === 0 ? (
+            <div className="flex flex-col items-center justify-center flex-1 text-muted-foreground gap-4 py-12">
+              <Folder className="size-10 opacity-40" />
+              <p className="text-sm">No files yet</p>
+              <p className="text-xs opacity-60">Upload images or PDFs to harden them</p>
+              <Button
+                type="button"
+                variant="default"
+                size="sm"
+                className="gap-2"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploading}
+              >
+                {uploading ? <Loader2 className="size-4 animate-spin" /> : <FilePlus className="size-4" />}
+                Upload files
+              </Button>
+            </div>
+          ) : (
+            <ul className="flex flex-col gap-0.5">
+              {rootFolders.map((folder) => (
+                <FolderNode
+                  key={folder.id}
+                  folder={folder}
+                  folders={folders}
+                  files={files}
+                  depth={0}
+                  selectedFolderId={selectedFolderId}
+                  selectedFileIds={selectedFileIds}
+                  onToggleFile={toggleFileSelection}
+                  onSelect={setSelectedFolderId}
+                  onDelete={deleteFolder}
+                  onDeleteFile={deleteFile}
+                />
+              ))}
+              {rootFiles.map((file) => (
+                <FileNode
+                  key={file.id}
+                  file={file}
+                  depth={0}
+                  selected={selectedFileIds.has(file.id)}
+                  onToggle={() => toggleFileSelection(file.id)}
+                  onDelete={deleteFile}
+                />
+              ))}
+            </ul>
+          )}
+          {files.some((f) => selectedFileIds.has(f.id)) && (
+            <div className="mt-3 pt-3 border-t border-border flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                size="sm"
+                disabled={submitLoading || selectedHardenable.length === 0}
+                onClick={submitHarden}
+                className="gap-1"
+              >
+                {submitLoading ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+                {submitLoading ? "Sending…" : "Submit to harden"}
+              </Button>
+              {submitLoading && (
+                <span className="text-xs text-muted-foreground">Calling API…</span>
+              )}
+              {selectedHardenable.length < selectedFiles.length && (
+                <span className="text-xs text-muted-foreground">
+                  {selectedFiles.length - selectedHardenable.length} selected not PDF/image or missing upload
+                </span>
+              )}
+            </div>
+          )}
+          {hardenedResults.length > 0 && (
+            <div className="mt-3 pt-3 border-t border-border space-y-2">
+              <p className="text-xs font-medium text-foreground">Ready to download</p>
+              <p className="text-xs text-muted-foreground">Hardened files returned from the API. Click to save.</p>
+              <div className="flex flex-wrap gap-2">
+                {hardenedResults.map((f, i) => (
+                  <Button
+                    key={`${f.hardenedName}-${i}`}
+                    type="button"
+                    size="sm"
+                    variant="default"
+                    className="gap-1"
+                    onClick={() => downloadHardened(f.hardenedName, f.data)}
+                  >
+                    <Download className="size-4" />
+                    {f.hardenedName}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
       )}
+      <ToastError message={error} onDismiss={() => setError(null)} />
     </div>
   );
 }
