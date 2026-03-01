@@ -17,6 +17,8 @@ pnpm-debug.log*
 
 .DS_Store
 
+/frontend_copy
+
 test_docs/
 
 # Generated output
