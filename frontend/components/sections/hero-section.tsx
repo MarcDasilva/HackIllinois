@@ -1,10 +1,11 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect } from "react";
 import { motion, useScroll, useTransform } from "framer-motion";
 import { ChevronDown } from "lucide-react";
 import MetallicPaint from "@/components/MetallicPaint";
 
+// Use relative URLs so Next.js rewrites proxy /api and /oauth to the backend (see next.config.ts)
 const images = [
   "/premium_photo-1670573801174-1ab41ec2afa0.avif",
   "/bigstock-Businessman-Or-Accountant-Work-BW_small.jpg",
@@ -47,6 +48,15 @@ function GoogleLogo({ className }: { className?: string }) {
 export function HeroSection() {
   const containerRef = useRef<HTMLDivElement>(null);
   const [metallicReady, setMetallicReady] = useState(false);
+  const [oauthUserId, setOauthUserId] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch("/api/oauth/user-id")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => data?.user_id && setOauthUserId(data.user_id))
+      .catch(() => {});
+  }, []);
+
   const { scrollYProgress } = useScroll({
     target: containerRef,
     offset: ["start start", "end start"],
@@ -172,10 +182,11 @@ export function HeroSection() {
           Documents stay <em className="italic font-serif font-bold tracking-tight mix-blend-normal" style={{ color: VELUM_GOLD, WebkitTextStroke: '4px white', paintOrder: 'stroke fill' }}>Yours</em>
         </h1>
         <a
-          href="#"
-          className="inline-flex items-center gap-2.5 px-6 py-3 rounded-3xl bg-black border-2 border-white text-white text-lg font-medium hover:bg-white hover:text-black transition-colors pointer-events-auto [&_svg]:text-white [&:hover_svg]:text-black"
+          href={oauthUserId ? `/oauth/google?user_id=${encodeURIComponent(oauthUserId)}` : "#"}
+          className="inline-flex items-center gap-2.5 px-6 py-3 rounded-3xl bg-black border-2 border-white text-white text-lg font-medium hover:bg-white hover:text-black transition-colors pointer-events-auto [&_svg]:text-white [&:hover_svg]:text-black disabled:opacity-70"
           style={{ fontFamily: 'Helvetica, Arial, sans-serif' }}
           data-clickable
+          title={!oauthUserId ? "Set OAUTH_DEFAULT_USER_ID in the API server .env" : undefined}
         >
           <GoogleLogo />
           Sign in with Google

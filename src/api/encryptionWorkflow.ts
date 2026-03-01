@@ -34,25 +34,30 @@ const jobs = new Map<string, EncryptionJob>();
 // ── Main Workflow Functions ──────────────────────────────────
 
 /**
- * Start encryption job for multiple files
- * 
+ * Start encryption job for multiple files.
+ *
+ * When userId is provided and OAuth is configured, Drive list/download/upload use that user's
+ * account (avoids "Service Accounts do not have storage quota" errors).
+ *
  * @param fileIds - Google Drive file IDs to encrypt
  * @param mode - Encryption mode ('full' or 'pattern')
  * @param replaceOriginal - Whether to replace original file in Drive
- * @returns Job ID for tracking progress
+ * @param userId - Optional Supabase user ID; if set, OAuth is used for Drive (user's quota)
  */
 export async function startEncryptionJob(
   fileIds: string[],
   mode: EncryptionMode = DEFAULT_MODE,
-  replaceOriginal: boolean = false
+  replaceOriginal: boolean = false,
+  userId?: string
 ): Promise<string> {
   const jobId = uuidv4();
-  
+
   const job: EncryptionJob = {
     id: jobId,
     fileIds,
     mode,
     replaceOriginal,
+    userId,
     status: 'pending',
     progress: {
       total: fileIds.length,
@@ -102,7 +107,7 @@ async function processEncryptionJob(jobId: string): Promise<void> {
   
   for (const fileId of job.fileIds) {
     try {
-      const result = await encryptFile(fileId, job.mode, job.replaceOriginal);
+      const result = await encryptFile(fileId, job.mode, job.replaceOriginal, job.userId);
       job.results.push(result);
       job.progress.completed++;
       
@@ -130,24 +135,20 @@ async function processEncryptionJob(jobId: string): Promise<void> {
 }
 
 /**
- * Encrypt a single file (core workflow)
- * 
- * @param fileId - Google Drive file ID
- * @param mode - Encryption mode
- * @param replaceOriginal - Whether to replace original
- * @returns Encryption result
+ * Encrypt a single file (core workflow).
+ * When userId is provided and OAuth is configured, all Drive operations use that user's account.
  */
 export async function encryptFile(
   fileId: string,
   mode: EncryptionMode = DEFAULT_MODE,
-  replaceOriginal: boolean = false
+  replaceOriginal: boolean = false,
+  userId?: string
 ): Promise<EncryptionJobResult> {
   let tempDir: string | null = null;
-  
+
   try {
-    // 1. Fetch file metadata from Drive
     console.log(`[encryptionWorkflow] Fetching metadata for file ${fileId}`);
-    const metadata = await googleDrive.getFileMetadata(fileId);
+    const metadata = await googleDrive.getFileMetadata(fileId, userId);
     
     // 2. Check if file type is supported
     if (!veilDoc.isMimeTypeSupported(metadata.mimeType)) {
@@ -163,16 +164,16 @@ export async function encryptFile(
       title: metadata.name ?? 'Untitled',
       google_drive_id: fileId,
       google_drive_name: metadata.name,
+      owner_id: userId,
       encryption_status: 'pending',
       encryption_method: mode === 'full' ? 'veildoc_full' : 'veildoc_pattern',
       encryption_enabled: true,
       original_drive_url: googleDrive.buildFileUrl(fileId),
       drive_modified_time: metadata.modifiedTime,
     });
-    
-    // 4. Set up webhook for continuous monitoring
+
     console.log(`[encryptionWorkflow] Creating webhook for file ${fileId}`);
-    const webhook = await googleDrive.createWebhook(fileId);
+    const webhook = await googleDrive.createWebhook(fileId, undefined, userId);
     
     await updateDocumentWebhook(documentId, {
       webhook_channel_id: webhook.id,
@@ -190,21 +191,25 @@ export async function encryptFile(
     const ext = veilDoc.getExtensionForMimeType(metadata.mimeType) || extname(metadata.name);
     const inputPath = join(tempDir, `input${ext}`);
     console.log(`[encryptionWorkflow] Downloading file to ${inputPath}`);
-    await googleDrive.downloadFile(fileId, inputPath);
+    await googleDrive.downloadFile(fileId, inputPath, userId);
     
     // 8. Encrypt document with VeilDoc
     console.log(`[encryptionWorkflow] Encrypting document with mode=${mode}`);
     const encryptionResult = await veilDoc.encryptDocument(inputPath, mode);
     
-    // 9. Upload encrypted file back to Drive
     console.log(`[encryptionWorkflow] Uploading encrypted file to Drive`);
+    const uploadOptions: { name?: string; mimeType?: string; replaceFileId?: string; folderId?: string } = {
+      name: metadata.name,
+      mimeType: metadata.mimeType,
+      replaceFileId: replaceOriginal ? fileId : undefined,
+    };
+    if (!uploadOptions.replaceFileId && metadata.parents?.[0]) {
+      uploadOptions.folderId = metadata.parents[0];
+    }
     const uploadedFile = await googleDrive.uploadFile(
       encryptionResult.outputPath,
-      {
-        name: metadata.name, // Keep same name
-        mimeType: metadata.mimeType,
-        replaceFileId: replaceOriginal ? fileId : undefined,
-      }
+      uploadOptions,
+      userId
     );
     
     const encryptedFileId = uploadedFile.id;
@@ -282,9 +287,10 @@ export async function reEncryptFile(documentId: string): Promise<void> {
   }
   
   const mode: EncryptionMode = doc.encryption_method === 'veildoc_full' ? 'full' : 'pattern';
-  
+  const userId = (doc as EncryptedDocument & { owner_id?: string }).owner_id;
+
   console.log(`[encryptionWorkflow] Re-encrypting file ${doc.google_drive_id}`);
-  await encryptFile(doc.google_drive_id, mode, true); // Always replace on re-encryption
+  await encryptFile(doc.google_drive_id, mode, true, userId);
 }
 
 /**
@@ -424,10 +430,13 @@ export async function renewExpiringWebhooks(): Promise<number> {
         continue;
       }
       
+      const docOwnerId = (doc as EncryptedDocument & { owner_id?: string }).owner_id;
       const newWebhook = await googleDrive.renewWebhook(
         doc.google_drive_id,
         doc.webhook_channel_id,
-        doc.webhook_resource_id
+        doc.webhook_resource_id,
+        undefined,
+        docOwnerId
       );
       
       await updateDocumentWebhook(doc.id, {

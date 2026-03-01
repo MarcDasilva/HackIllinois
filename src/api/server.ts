@@ -9,6 +9,7 @@ import bodyParser from 'body-parser';
 import { createClient } from '@supabase/supabase-js';
 import * as googleDrive from './googleDrive';
 import * as encryptionWorkflow from './encryptionWorkflow';
+import { getAuthUrl, exchangeCodeAndStore } from '../googleDrive';
 import type { WebhookNotification } from '../types/encryption';
 
 // ── Configuration ────────────────────────────────────────────
@@ -29,6 +30,16 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
 const app = express();
 
+// CORS so frontend on another port (e.g. Next.js on 3001) can call /api/oauth/user-id
+const corsOrigin = process.env.CORS_ORIGIN || 'http://localhost:3000';
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', corsOrigin === '*' ? '*' : corsOrigin);
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+
 // Middleware
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
@@ -37,6 +48,84 @@ app.use(bodyParser.urlencoded({ extended: true }));
 app.use((req: Request, res: Response, next: NextFunction) => {
   console.log(`[API] ${req.method} ${req.path}`);
   next();
+});
+
+// ── OAuth (Google Drive connect) ────────────────────────────
+
+/**
+ * GET /oauth/google
+ * Redirect to Google consent. Query: user_id (required) — Supabase user UUID.
+ */
+app.get('/oauth/google', (req: Request, res: Response) => {
+  const userId = req.query['user_id'];
+  if (!userId || typeof userId !== 'string') {
+    res.status(400).json({
+      error: 'Missing required query parameter: user_id',
+      hint: 'Pass the Supabase user UUID as ?user_id=<uuid>',
+    });
+    return;
+  }
+  const state = Buffer.from(JSON.stringify({ user_id: userId })).toString('base64url');
+  try {
+    const authUrl = getAuthUrl();
+    res.redirect(`${authUrl}&state=${encodeURIComponent(state)}`);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+/**
+ * GET /api/oauth/user-id
+ * Returns the configured default user ID for OAuth (from OAUTH_DEFAULT_USER_ID).
+ * Frontend uses this for the "Sign in with Google" link so you configure once in .env.
+ */
+app.get('/api/oauth/user-id', (_req: Request, res: Response) => {
+  const userId = process.env.OAUTH_DEFAULT_USER_ID?.trim();
+  if (!userId) {
+    res.status(404).json({ error: 'OAUTH_DEFAULT_USER_ID not set in server .env' });
+    return;
+  }
+  res.json({ user_id: userId });
+});
+
+/**
+ * GET /oauth/callback
+ * Google redirects here after consent. Exchanges code for tokens, stores in Supabase.
+ */
+app.get('/oauth/callback', async (req: Request, res: Response) => {
+  const code = req.query['code'];
+  const state = req.query['state'];
+  const errorParam = req.query['error'];
+  if (errorParam) {
+    res.status(400).json({ error: `OAuth denied: ${errorParam}` });
+    return;
+  }
+  if (!code || typeof code !== 'string') {
+    res.status(400).json({ error: "Missing 'code' from Google OAuth callback." });
+    return;
+  }
+  let userId: string;
+  try {
+    const stateStr = Buffer.from(String(state), 'base64url').toString('utf8');
+    const parsed = JSON.parse(stateStr) as { user_id?: string };
+    if (!parsed.user_id) throw new Error('state missing user_id');
+    userId = parsed.user_id;
+  } catch {
+    res.status(400).json({ error: 'Invalid or missing state parameter.' });
+    return;
+  }
+  try {
+    await exchangeCodeAndStore(code, userId);
+    const successRedirect = process.env.OAUTH_SUCCESS_REDIRECT;
+    if (successRedirect) {
+      res.redirect(successRedirect);
+    } else {
+      res.json({ success: true, message: 'Google Drive connected.', user_id: userId });
+    }
+  } catch (err) {
+    console.error('[API] OAuth callback error:', String(err));
+    res.status(500).json({ error: String(err) });
+  }
 });
 
 // ── API Endpoints ────────────────────────────────────────────
@@ -76,14 +165,18 @@ app.get('/api/health', async (req: Request, res: Response) => {
  */
 app.get('/api/drive/files', async (req: Request, res: Response) => {
   try {
-    const { folderId, pageToken, mimeType } = req.query;
-    
-    const result = await googleDrive.listFiles({
-      folderId: folderId as string | undefined,
-      pageToken: pageToken as string | undefined,
-      mimeType: mimeType as string | undefined,
-    });
-    
+    const { folderId, pageToken, mimeType, userId } = req.query;
+    const uid = typeof userId === 'string' && userId.trim() ? userId.trim() : undefined;
+
+    const result = await googleDrive.listFiles(
+      {
+        folderId: folderId as string | undefined,
+        pageToken: pageToken as string | undefined,
+        mimeType: mimeType as string | undefined,
+      },
+      uid
+    );
+
     res.json(result);
   } catch (error) {
     console.error('[API] Error listing files:', error);
@@ -100,14 +193,13 @@ app.get('/api/drive/files', async (req: Request, res: Response) => {
  */
 app.post('/api/drive/encrypt', async (req: Request, res: Response) => {
   try {
-    const { fileIds, mode, replaceOriginal } = req.body;
-    
+    const { fileIds, mode, replaceOriginal, userId } = req.body;
+
     if (!fileIds || !Array.isArray(fileIds) || fileIds.length === 0) {
       return res.status(400).json({
         error: 'fileIds must be a non-empty array',
       });
     }
-    // Sanitize file IDs (trim and strip trailing garbage from shell/encoding, e.g. stray " or ??)
     const sanitizedFileIds = fileIds.map((id: string) =>
       String(id).trim().replace(/["?\s]+$/g, '').replace(/^["?\s]+/g, '')
     ).filter(Boolean);
@@ -122,11 +214,12 @@ app.post('/api/drive/encrypt', async (req: Request, res: Response) => {
         error: 'mode must be either "full" or "pattern"',
       });
     }
-    
+
     const jobId = await encryptionWorkflow.startEncryptionJob(
       sanitizedFileIds,
       mode || 'pattern',
-      replaceOriginal || false
+      replaceOriginal || false,
+      typeof userId === 'string' && userId.trim() ? userId.trim() : undefined
     );
     
     res.json({
@@ -235,9 +328,9 @@ app.post('/api/drive/webhook', async (req: Request, res: Response) => {
     }
     
     const doc = docs[0];
-    
-    // Fetch latest file metadata from Drive
-    const metadata = await googleDrive.getFileMetadata(doc.google_drive_id);
+    const ownerId = (doc as { owner_id?: string }).owner_id;
+
+    const metadata = await googleDrive.getFileMetadata(doc.google_drive_id, ownerId);
     
     // Check if file content actually changed (not just viewed/shared)
     if (metadata.modifiedTime === doc.drive_modified_time) {
@@ -301,6 +394,15 @@ app.get('/api/documents', async (req: Request, res: Response) => {
 
 // ── Error Handling ───────────────────────────────────────────
 
+// Root — friendly response when someone opens the API URL in a browser
+app.get('/', (_req: Request, res: Response) => {
+  res.json({
+    message: 'API server. Use the frontend app for the UI.',
+    health: '/api/health',
+    oauth_user_id: '/api/oauth/user-id',
+  });
+});
+
 // 404 handler
 app.use((req: Request, res: Response) => {
   res.status(404).json({
@@ -327,15 +429,16 @@ export async function startServer(): Promise<void> {
   try {
     console.log('[API] Starting server...');
     
-    // Initialize Google Drive client (optional in development)
     try {
       await googleDrive.initDriveClient();
-      console.log('[API] ✓ Google Drive client initialized');
+      console.log('[API] ✓ Google Drive client initialized (service account)');
     } catch (error) {
-      console.warn('[API] ⚠ Warning: Failed to initialize Google Drive client');
-      console.warn('[API] Google Drive features will be disabled');
-      console.warn('[API] Error:', error instanceof Error ? error.message : 'Unknown error');
-      console.warn('[API] Make sure GOOGLE_SERVICE_ACCOUNT_PATH is set and the file exists');
+      if (googleDrive.isOAuthConfigured()) {
+        console.log('[API] ✓ Using OAuth for Drive (pass userId in /api/drive/encrypt and /api/drive/files to avoid storage quota)');
+      } else {
+        console.warn('[API] ⚠ Warning: Failed to initialize Google Drive client');
+        console.warn('[API] Set GOOGLE_SERVICE_ACCOUNT_PATH or OAuth (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI)');
+      }
     }
     
     // Start webhook renewal background task
@@ -359,6 +462,9 @@ export async function startServer(): Promise<void> {
       console.log('[API]');
       console.log('[API] Available endpoints:');
       console.log('[API]   GET  /api/health');
+      console.log('[API]   GET  /api/oauth/user-id');
+      console.log('[API]   GET  /oauth/google?user_id=<uuid>');
+      console.log('[API]   GET  /oauth/callback');
       console.log('[API]   GET  /api/drive/files');
       console.log('[API]   POST /api/drive/encrypt');
       console.log('[API]   GET  /api/drive/status/:jobId');

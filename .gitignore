@@ -39,3 +39,6 @@ config/token_accounts.json
 config/google-service-account.json
 config/google-service-account.example.json
 .env.example
+
+
+api_test_calls/

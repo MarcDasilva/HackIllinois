@@ -1,8 +1,10 @@
 /**
  * Google Drive API Integration Module
- * 
- * Provides functions for interacting with Google Drive API including
- * file listing, downloading, uploading, and webhook management.
+ *
+ * Supports two auth modes:
+ * - Service account (JWT): no user storage quota; use Shared Drive or GOOGLE_DRIVE_UPLOAD_FOLDER_ID.
+ * - OAuth (per-user): uses the user's Drive and quota; no Shared Drive required.
+ * When userId is passed to list/get/download/upload, OAuth is used if GOOGLE_CLIENT_ID is set.
  */
 
 import { google, drive_v3 } from 'googleapis';
@@ -11,6 +13,7 @@ import { createReadStream, createWriteStream, existsSync } from 'fs';
 import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { v4 as uuidv4 } from 'uuid';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import type {
   DriveFile,
   DriveFileList,
@@ -24,10 +27,86 @@ import type {
 
 const SERVICE_ACCOUNT_PATH = process.env.GOOGLE_SERVICE_ACCOUNT_PATH || './config/google-service-account.json';
 const WEBHOOK_URL = process.env.GOOGLE_DRIVE_WEBHOOK_URL || '';
+/** Folder or Shared Drive folder ID where new files are uploaded (service account only; OAuth uses user's Drive) */
+const UPLOAD_FOLDER_ID = process.env.GOOGLE_DRIVE_UPLOAD_FOLDER_ID;
 const SCOPES = ['https://www.googleapis.com/auth/drive'];
 
 let driveClient: drive_v3.Drive | null = null;
 let authClient: JWT | null = null;
+
+/** Lazy Supabase client for OAuth token storage (user_integrations) */
+let _supabase: SupabaseClient | null = null;
+function getSupabase(): SupabaseClient {
+  if (!_supabase) {
+    const url = process.env.SUPABASE_URL;
+    const key = process.env.SUPABASE_SERVICE_KEY;
+    if (!url || !key) throw new Error('SUPABASE_URL and SUPABASE_SERVICE_KEY required for OAuth Drive.');
+    _supabase = createClient(url, key);
+  }
+  return _supabase;
+}
+
+function getOAuthConfig(): { clientId: string; clientSecret: string; redirectUri: string } {
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  const redirectUri = process.env.GOOGLE_REDIRECT_URI;
+  if (!clientId?.trim()) throw new Error('GOOGLE_CLIENT_ID is not set for OAuth. Create an OAuth 2.0 client in Google Cloud Console.');
+  if (!clientSecret?.trim()) throw new Error('GOOGLE_CLIENT_SECRET is not set.');
+  if (!redirectUri?.trim()) throw new Error('GOOGLE_REDIRECT_URI is not set (e.g. http://localhost:3000/oauth/callback).');
+  return { clientId, clientSecret, redirectUri };
+}
+
+/** Load a user's OAuth tokens from user_integrations. */
+async function loadUserTokens(userId: string): Promise<{ access_token: string; refresh_token: string; token_expires_at: string }> {
+  const { data, error } = await getSupabase()
+    .from('user_integrations')
+    .select('access_token, refresh_token, token_expires_at')
+    .eq('user_id', userId)
+    .eq('provider', 'google_drive')
+    .single();
+  if (error || !data) {
+    throw new Error(`No Google Drive OAuth for user ${userId}. User should connect Drive first (e.g. OAuth flow).`);
+  }
+  const row = data as Record<string, string>;
+  return { access_token: row.access_token, refresh_token: row.refresh_token, token_expires_at: row.token_expires_at };
+}
+
+async function persistRefreshedToken(userId: string, accessToken: string, expiresAt: string): Promise<void> {
+  const { error } = await getSupabase()
+    .from('user_integrations')
+    .update({ access_token: accessToken, token_expires_at: expiresAt })
+    .eq('user_id', userId)
+    .eq('provider', 'google_drive');
+  if (error) throw new Error(`Failed to persist refreshed token: ${error.message}`);
+}
+
+/** Build a Drive v3 client using the user's OAuth tokens (uses their storage quota). */
+export async function getDriveClientForUser(userId: string): Promise<drive_v3.Drive> {
+  const tokens = await loadUserTokens(userId);
+  const { clientId, clientSecret, redirectUri } = getOAuthConfig();
+  const oauth2Client = new google.auth.OAuth2(clientId, clientSecret, redirectUri);
+  oauth2Client.setCredentials({
+    access_token: tokens.access_token,
+    refresh_token: tokens.refresh_token,
+    expiry_date: new Date(tokens.token_expires_at).getTime(),
+  });
+  oauth2Client.on('tokens', (newTokens) => {
+    if (newTokens.access_token) {
+      const expiresAt = newTokens.expiry_date
+        ? new Date(newTokens.expiry_date).toISOString()
+        : new Date(Date.now() + 3600 * 1000).toISOString();
+      persistRefreshedToken(userId, newTokens.access_token, expiresAt).catch((err) =>
+        console.error(`[googleDrive] Failed to persist refreshed token for ${userId}:`, err)
+      );
+    }
+  });
+  return google.drive({ version: 'v3', auth: oauth2Client });
+}
+
+/** True if OAuth is configured and can be used for user-scoped operations. */
+export function isOAuthConfigured(): boolean {
+  return !!(process.env.GOOGLE_CLIENT_ID?.trim() && process.env.GOOGLE_CLIENT_SECRET?.trim() && process.env.GOOGLE_REDIRECT_URI?.trim());
+}
 
 // ── Initialization ───────────────────────────────────────────
 
@@ -81,13 +160,11 @@ function getDriveClient(): drive_v3.Drive {
 // ── File Operations ──────────────────────────────────────────
 
 /**
- * List files from Google Drive with pagination
- * 
- * @param options - List options (folderId, pageToken, etc.)
- * @returns Promise resolving to file list
+ * List files from Google Drive with pagination.
+ * When userId is provided and OAuth is configured, uses that user's Drive (their quota).
  */
-export async function listFiles(options: ListFilesOptions = {}): Promise<DriveFileList> {
-  const drive = getDriveClient();
+export async function listFiles(options: ListFilesOptions = {}, userId?: string): Promise<DriveFileList> {
+  const drive = userId && isOAuthConfigured() ? await getDriveClientForUser(userId) : getDriveClient();
 
   // Build query
   const queryParts: string[] = ["trashed = false"];
@@ -113,6 +190,8 @@ export async function listFiles(options: ListFilesOptions = {}): Promise<DriveFi
     pageToken: options.pageToken,
     fields: 'nextPageToken, files(id, name, mimeType, size, createdTime, modifiedTime, webViewLink, iconLink, thumbnailLink, parents)',
     orderBy: 'modifiedTime desc',
+    supportsAllDrives: true,
+    includeItemsFromAllDrives: true,
   });
 
   return {
@@ -122,34 +201,30 @@ export async function listFiles(options: ListFilesOptions = {}): Promise<DriveFi
 }
 
 /**
- * Get file metadata from Google Drive
- * 
- * @param fileId - Google Drive file ID
- * @returns Promise resolving to file metadata
+ * Get file metadata from Google Drive.
+ * When userId is provided and OAuth is configured, uses that user's access.
  */
-export async function getFileMetadata(fileId: string): Promise<DriveFileMetadata> {
-  const drive = getDriveClient();
+export async function getFileMetadata(fileId: string, userId?: string): Promise<DriveFileMetadata> {
+  const drive = userId && isOAuthConfigured() ? await getDriveClientForUser(userId) : getDriveClient();
 
   const response = await drive.files.get({
     fileId,
     fields: 'id, name, mimeType, size, modifiedTime, createdTime, webViewLink, parents',
+    supportsAllDrives: true,
   });
 
   return response.data as DriveFileMetadata;
 }
 
 /**
- * Download file from Google Drive to local path
- * 
- * @param fileId - Google Drive file ID
- * @param destPath - Destination path for downloaded file
- * @returns Promise resolving to downloaded file path
+ * Download file from Google Drive to local path.
+ * When userId is provided and OAuth is configured, uses that user's access.
  */
-export async function downloadFile(fileId: string, destPath: string): Promise<string> {
-  const drive = getDriveClient();
+export async function downloadFile(fileId: string, destPath: string, userId?: string): Promise<string> {
+  const drive = userId && isOAuthConfigured() ? await getDriveClientForUser(userId) : getDriveClient();
 
   const response = await drive.files.get(
-    { fileId, alt: 'media' },
+    { fileId, alt: 'media', supportsAllDrives: true },
     { responseType: 'stream' }
   );
 
@@ -165,17 +240,16 @@ export async function downloadFile(fileId: string, destPath: string): Promise<st
 }
 
 /**
- * Upload file to Google Drive
- * 
- * @param filePath - Path to local file
- * @param options - Upload options (name, folderId, mimeType, replaceFileId)
- * @returns Promise resolving to uploaded file metadata
+ * Upload file to Google Drive.
+ * When userId is provided and OAuth is configured, uses that user's Drive (avoids service-account storage quota).
+ * For new files without replaceFileId, pass folderId (e.g. same folder as original) or rely on GOOGLE_DRIVE_UPLOAD_FOLDER_ID for service account.
  */
 export async function uploadFile(
   filePath: string,
-  options: UploadOptions = {}
+  options: UploadOptions = {},
+  userId?: string
 ): Promise<DriveFileMetadata> {
-  const drive = getDriveClient();
+  const drive = userId && isOAuthConfigured() ? await getDriveClientForUser(userId) : getDriveClient();
 
   if (!existsSync(filePath)) {
     throw new Error(`File not found: ${filePath}`);
@@ -186,30 +260,38 @@ export async function uploadFile(
     body: createReadStream(filePath),
   };
 
-  // If replaceFileId is provided, update existing file
   if (options.replaceFileId) {
     const response = await drive.files.update({
       fileId: options.replaceFileId,
       media,
       fields: 'id, name, mimeType, size, modifiedTime, createdTime, webViewLink, parents',
+      supportsAllDrives: true,
     });
-
     return response.data as DriveFileMetadata;
   }
 
-  // Otherwise create new file
-  const fileMetadata: any = {
-    name: options.name || filePath.split('/').pop() || 'untitled',
-  };
-
-  if (options.folderId) {
-    fileMetadata.parents = [options.folderId];
+  const envUploadFolderId = process.env.GOOGLE_DRIVE_UPLOAD_FOLDER_ID ?? '';
+  const parentId = options.folderId || envUploadFolderId || UPLOAD_FOLDER_ID;
+  const usingOAuth = !!(userId && isOAuthConfigured());
+  if (!parentId && !usingOAuth) {
+    throw new Error(
+      'Service accounts have no storage quota. Set GOOGLE_DRIVE_UPLOAD_FOLDER_ID to a Shared Drive folder, or use OAuth (pass userId and set GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REDIRECT_URI).'
+    );
   }
+  if (!parentId) {
+    throw new Error('Upload requires folderId in options when creating a new file (e.g. same folder as original).');
+  }
+
+  const fileMetadata: drive_v3.Schema$File = {
+    name: options.name || filePath.split(/[/\\]/).pop() || 'untitled',
+    parents: [parentId],
+  };
 
   const response = await drive.files.create({
     requestBody: fileMetadata,
     media,
     fields: 'id, name, mimeType, size, modifiedTime, createdTime, webViewLink, parents',
+    supportsAllDrives: true,
   });
 
   return response.data as DriveFileMetadata;
@@ -223,23 +305,21 @@ export async function uploadFile(
  */
 export async function deleteFile(fileId: string): Promise<void> {
   const drive = getDriveClient();
-  await drive.files.delete({ fileId });
+  await drive.files.delete({ fileId, supportsAllDrives: true });
 }
 
 // ── Webhook Management ───────────────────────────────────────
 
 /**
- * Create webhook for file change notifications
- * 
- * @param fileId - Google Drive file ID to monitor
- * @param callbackUrl - URL to receive webhook notifications (optional, uses env var)
- * @returns Promise resolving to webhook details
+ * Create webhook for file change notifications.
+ * When userId is provided and OAuth is configured, uses that user's Drive client.
  */
 export async function createWebhook(
   fileId: string,
-  callbackUrl?: string
+  callbackUrl?: string,
+  userId?: string
 ): Promise<DriveWebhook> {
-  const drive = getDriveClient();
+  const drive = userId && isOAuthConfigured() ? await getDriveClientForUser(userId) : getDriveClient();
   const url = callbackUrl || WEBHOOK_URL;
 
   if (!url) {
@@ -269,14 +349,11 @@ export async function createWebhook(
 }
 
 /**
- * Stop webhook channel
- * 
- * @param channelId - Webhook channel ID
- * @param resourceId - Webhook resource ID
- * @returns Promise resolving when webhook is stopped
+ * Stop webhook channel.
+ * When userId is provided and OAuth is configured, uses that user's Drive client.
  */
-export async function stopWebhook(channelId: string, resourceId: string): Promise<void> {
-  const drive = getDriveClient();
+export async function stopWebhook(channelId: string, resourceId: string, userId?: string): Promise<void> {
+  const drive = userId && isOAuthConfigured() ? await getDriveClientForUser(userId) : getDriveClient();
 
   await drive.channels.stop({
     requestBody: {
@@ -307,29 +384,22 @@ export function verifyWebhookSignature(
 }
 
 /**
- * Renew webhook before expiration
- * 
- * @param fileId - Google Drive file ID
- * @param oldChannelId - Old channel ID to stop
- * @param oldResourceId - Old resource ID
- * @param callbackUrl - URL to receive webhook notifications (optional)
- * @returns Promise resolving to new webhook details
+ * Renew webhook before expiration.
+ * When userId is provided and OAuth is configured, uses that user's Drive client.
  */
 export async function renewWebhook(
   fileId: string,
   oldChannelId: string,
   oldResourceId: string,
-  callbackUrl?: string
+  callbackUrl?: string,
+  userId?: string
 ): Promise<DriveWebhook> {
-  // Stop old webhook
   try {
-    await stopWebhook(oldChannelId, oldResourceId);
+    await stopWebhook(oldChannelId, oldResourceId, userId);
   } catch (error) {
     console.warn(`[googleDrive] Failed to stop old webhook: ${error}`);
   }
-
-  // Create new webhook
-  return createWebhook(fileId, callbackUrl);
+  return createWebhook(fileId, callbackUrl, userId);
 }
 
 // ── Utility Functions ────────────────────────────────────────
@@ -371,6 +441,8 @@ export function extractFileIdFromUrl(url: string): string | null {
 
 export default {
   initDriveClient,
+  getDriveClientForUser,
+  isOAuthConfigured,
   listFiles,
   getFileMetadata,
   downloadFile,

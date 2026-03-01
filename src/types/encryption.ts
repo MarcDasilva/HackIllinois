@@ -38,6 +38,8 @@ export interface EncryptionJob {
   fileIds: string[];
   mode: EncryptionMode;
   replaceOriginal: boolean;
+  /** When set and OAuth is configured, Drive operations use this user's quota (avoids service-account storage limit). */
+  userId?: string;
   status: 'pending' | 'in_progress' | 'completed' | 'failed';
   progress: {
     total: number;

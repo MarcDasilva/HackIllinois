@@ -274,20 +274,22 @@ function executeProcess(
   args: string[]
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   return new Promise((resolve, reject) => {
-    const process = spawn(command, args);
+    // Force UTF-8 for Python stdout/stderr so Unicode (e.g. ✓) doesn't break on Windows
+    const env = { ...process.env, PYTHONIOENCODING: 'utf-8' };
+    const proc = spawn(command, args, { env });
     
     let stdout = '';
     let stderr = '';
     
-    process.stdout.on('data', (data) => {
-      stdout += data.toString();
+    proc.stdout.on('data', (data: Buffer) => {
+      stdout += data.toString('utf8');
     });
     
-    process.stderr.on('data', (data) => {
-      stderr += data.toString();
+    proc.stderr.on('data', (data: Buffer) => {
+      stderr += data.toString('utf8');
     });
     
-    process.on('close', (code) => {
+    proc.on('close', (code) => {
       resolve({
         stdout,
         stderr,
@@ -295,7 +297,7 @@ function executeProcess(
       });
     });
     
-    process.on('error', (error) => {
+    proc.on('error', (error) => {
       reject(new Error(`Failed to execute process: ${error.message}`));
     });
   });
