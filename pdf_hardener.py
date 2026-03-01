@@ -41,6 +41,7 @@ Run  python pdf_hardener.py --help  for all flags.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import json
 import math
@@ -71,6 +72,41 @@ try:
     import adversarial as adv_engine
 except ImportError:
     adv_engine = None
+
+
+# ---------------------------------------------------------------------------
+# Seed derivation — connects to LAVA entropy oracle
+# ---------------------------------------------------------------------------
+# The oracle produces a SHA3-256 entropy_seed every tick from Solana
+# blockchain state.  This function converts that (or any string) into
+# the integer seed that drives ALL randomness in the hardener:
+# gibberish generation, decoy text placement, pixel noise, etc.
+#
+# Same entropy_seed in  ->  same hardened PDF out.  Deterministic.
+
+def derive_seed_int(seed_material: str) -> int:
+    """Derive a deterministic integer seed from any input.
+
+    Accepts:
+      - Integer string: "42" -> 42
+      - Hex hash from LAVA oracle entropy_seed: "a3f8b2c1..." -> int
+      - Any arbitrary string: hashed via SHA-256 -> int
+
+    Same input always produces the same seed.
+    """
+    # Plain integer (backwards compatible with --seed 42)
+    try:
+        return int(seed_material)
+    except ValueError:
+        pass
+    # Try as hex string (like entropy_seed from oracle — 64 hex chars)
+    try:
+        return int(seed_material[:16], 16)  # first 8 bytes = 16 hex chars
+    except ValueError:
+        pass
+    # Arbitrary string — hash it and take first 8 bytes
+    h = hashlib.sha256(seed_material.encode("utf-8")).digest()
+    return int.from_bytes(h[:8], "big")
 
 
 # ---------------------------------------------------------------------------
@@ -779,7 +815,9 @@ Examples:
                    help="Input PDF file.")
     p.add_argument("--output", "-o", default=None,
                    help="Output PDF (default: output/<stem>_hardened.pdf).")
-    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--seed", type=str, default="42",
+                   help="Seed for deterministic randomness. Accepts integer, "
+                        "hex hash from LAVA oracle, or any string.")
     p.add_argument("--dpi", type=int, default=300,
                    help="Rasterization DPI (default: 300).")
     p.add_argument("--jpeg-quality", type=int, default=88,
@@ -843,12 +881,13 @@ def main(argv=None):
     os.makedirs(os.path.dirname(os.path.abspath(args.output)) or ".", exist_ok=True)
 
     # --- Config ---
+    seed_int = derive_seed_int(args.seed)
     if args.safe_mode:
-        cfg = safe_mode_config(seed=args.seed, dpi=args.dpi,
+        cfg = safe_mode_config(seed=seed_int, dpi=args.dpi,
                                jpeg_quality=args.jpeg_quality,
                                strength=args.strength)
     else:
-        cfg = HardeningConfig(seed=args.seed, dpi=args.dpi,
+        cfg = HardeningConfig(seed=seed_int, dpi=args.dpi,
                               jpeg_quality=args.jpeg_quality,
                               strength=args.strength)
     if args.no_poison:
@@ -877,6 +916,7 @@ def main(argv=None):
     print("=" * 60)
     print(f"  input       : {args.input}")
     print(f"  output      : {args.output}")
+    print(f"  seed        : {args.seed} -> {cfg.seed}")
     print(f"  DPI         : {cfg.dpi}")
     print(f"  JPEG quality: {cfg.jpeg_quality}")
     print(f"  noise       : +/-{cfg.noise_amplitude}/255 per pixel")
