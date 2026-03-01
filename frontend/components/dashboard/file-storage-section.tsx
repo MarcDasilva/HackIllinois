@@ -667,7 +667,7 @@ export function FileStorageSection() {
                         Download
                       </Button>
                       {isMinted ? (
-                        <span className="text-xs text-muted-foreground px-2 py-1.5 rounded border border-border bg-muted/50">
+                        <span className="text-xs text-amber-500 px-2 py-1.5 rounded border border-amber-500/40 bg-amber-500/10">
                           Minted
                         </span>
                       ) : (

@@ -1,10 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { ArrowDownLeft, ArrowUpRight, Clock, Coins, Sparkles } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, Clock, Coins, Sparkles, ExternalLink } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/lib/auth/auth-provider";
 import { cn } from "@/lib/utils";
+
+const EXPLORER_DEVNET = "https://explorer.solana.com";
+const EXPLORER_MAINNET = "https://explorer.solana.com";
+function explorerUrl(txHash: string, cluster: "devnet" | "mainnet-beta" = "devnet") {
+  const base = cluster === "mainnet-beta" ? EXPLORER_MAINNET : EXPLORER_DEVNET;
+  return `${base}/tx/${txHash}${cluster === "devnet" ? "?cluster=devnet" : ""}`;
+}
 
 type TxRow = {
   id: string;
@@ -23,7 +30,7 @@ function TxIcon({ type }: { type: string }) {
   if (type === "receive") return <ArrowDownLeft className="size-4 text-green-400 shrink-0" />;
   if (type === "transfer") return <ArrowUpRight className="size-4 text-red-400 shrink-0" />;
   if (type === "fee") return <Coins className="size-4 text-yellow-400 shrink-0" />;
-  if (type === "minted") return <Sparkles className="size-4 text-violet-400 shrink-0" />;
+  if (type === "minted") return <Sparkles className="size-4 text-amber-400 shrink-0" />;
   return <Clock className="size-4 text-muted-foreground shrink-0" />;
 }
 
@@ -60,7 +67,8 @@ export function WalletHistorySection() {
 
   return (
     <div className="flex flex-1 flex-col pt-6 pr-4 pb-6 pl-4 w-full border-l border-border">
-      <h2 className="text-sm font-medium text-muted-foreground mb-3">Wallet History</h2>
+      <h2 className="text-sm font-medium text-muted-foreground mb-1">Wallet History</h2>
+      <p className="text-xs text-muted-foreground/80 mb-3">Mints and other activity. Click a tx to view on Solana Explorer.</p>
 
       {loading ? (
         <p className="text-xs text-muted-foreground">Loading…</p>
@@ -85,7 +93,7 @@ export function WalletHistorySection() {
                     tx.type === "receive" && "text-green-400",
                     tx.type === "transfer" && "text-red-400",
                     tx.type === "fee" && "text-yellow-400",
-                    tx.type === "minted" && "text-violet-400",
+                    tx.type === "minted" && "text-amber-400",
                   )}>
                     {tx.type}
                   </span>
@@ -96,9 +104,18 @@ export function WalletHistorySection() {
                 {tx.description && (
                   <p className="text-xs text-muted-foreground truncate mt-0.5">{tx.description}</p>
                 )}
-                {tx.tx_hash && (
-                  <p className="text-xs text-muted-foreground/50 font-mono truncate mt-0.5">{tx.tx_hash}</p>
-                )}
+                {tx.tx_hash ? (
+                  <a
+                    href={explorerUrl(tx.tx_hash)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-xs text-muted-foreground/50 font-mono truncate mt-0.5 hover:text-foreground hover:underline"
+                    title="View on Solana Explorer"
+                  >
+                    <span className="truncate max-w-[140px]">{tx.tx_hash}</span>
+                    <ExternalLink className="size-3 shrink-0" />
+                  </a>
+                ) : null}
                 <p className="text-xs text-muted-foreground/40 mt-0.5">{formatDate(tx.created_at)}</p>
               </div>
             </li>

@@ -4,7 +4,7 @@ import * as React from "react";
 import {
   IconCamera,
   IconChartBar,
-  IconDashboard,
+  IconHierarchy2,
   IconDatabase,
   IconFileAi,
   IconFileDescription,
@@ -59,9 +59,9 @@ export function AppSidebar({
     user,
     navMain: [
       {
-        title: "Dashboard",
-        url: "#",
-        icon: IconDashboard,
+        title: "Hierarchy",
+        url: "/dashboard/hierarchy",
+        icon: IconHierarchy2,
       },
       {
         title: "Lifecycle",
