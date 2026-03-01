@@ -61,28 +61,25 @@ function LayoutAnimation() {
   );
 }
 
-function SpeedIndicator() {
-  const [progress, setProgress] = useState(0);
+function SeedIndicator() {
+  const [hash, setHash] = useState("a3f8b2c1");
 
   useEffect(() => {
-    const timeout = setTimeout(() => setProgress(100), 500);
-    return () => clearTimeout(timeout);
+    const chars = "0123456789abcdef";
+    const interval = setInterval(() => {
+      let h = "";
+      for (let i = 0; i < 8; i++) h += chars[Math.floor(Math.random() * 16)];
+      setHash(h);
+    }, 300);
+    return () => clearInterval(interval);
   }, []);
 
   return (
-    <div className="flex flex-col items-center justify-center h-full gap-4">
-      <span className="text-3xl md:text-4xl font-sans font-medium text-foreground">
-        100ms
+    <div className="flex flex-col items-center justify-center h-full gap-3">
+      <span className="text-2xl md:text-3xl font-mono font-medium text-foreground tracking-wider">
+        {hash}
       </span>
-      <span className="text-sm text-muted-foreground">Load Time</span>
-      <div className="w-full max-w-[120px] h-1.5 bg-foreground/10 rounded-full overflow-hidden">
-        <motion.div
-          className="h-full bg-primary rounded-full"
-          initial={{ width: 0 }}
-          animate={{ width: `${progress}%` }}
-          transition={{ duration: 0.1 }}
-        />
-      </div>
+      <span className="text-xs text-muted-foreground">SHA3-256 Entropy Seed</span>
     </div>
   );
 }
@@ -158,13 +155,15 @@ export function FeaturesSection() {
             data-clickable
           >
             <div className="flex-1">
-              <SpeedIndicator />
+              <SeedIndicator />
             </div>
             <div className="mt-4">
-              <h3 className="font-serif text-xl text-foreground">Speed</h3>
+              <h3 className="font-serif text-xl text-foreground">Seed Generation</h3>
               <p className="text-muted-foreground text-sm mt-1">
-                Quick encryption and decryption of documents. No waiting for
-                pages to load.
+                Every 5 minutes, Velum samples live Solana data — token account
+                balances, slot, and blockhash — combines it with registered
+                document IDs, and hashes it via SHA3-256 to produce a verifiable
+                entropy seed committed on-chain using the SPL Memo program.
               </p>
             </div>
           </motion.div>
