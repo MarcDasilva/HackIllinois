@@ -141,7 +141,6 @@ def apply_uap(
 # ---------------------------------------------------------------------------
 # Layer 2: ViT patch boundary disruption
 # ---------------------------------------------------------------------------
-
 def apply_vit_disruption(
     img_arr: np.ndarray,
     rng: np.random.Generator,
