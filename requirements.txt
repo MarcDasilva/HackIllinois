@@ -9,5 +9,13 @@ torch>=2.0.0
 torchvision>=0.15.0
 transformers>=4.30.0
 
+# Face-aware protection (PhotoGuard-style VAE attack)
+facenet-pytorch>=2.5.3       # MTCNN face detection
+diffusers>=0.25.0            # Stable Diffusion VAE encoder
+accelerate>=0.26.0           # diffusers dependency
+
+# Modal serverless GPU (for face protection without local GPU)
+modal>=0.60.0
+
 # Optional — OCR evaluation (--eval-ocr)
 # pytesseract>=0.3.10

@@ -6,7 +6,16 @@ image_hardener.py  --  Per-image AI/LLM protection pipeline
 Protects photos and images so that ChatGPT, Claude, and other vision-
 enabled LLMs cannot describe or reason about the image content.
 
-Protection layers (all fast, <1 s per image):
+**Face-aware routing** (v2):
+  Input Image → MTCNN face detection →
+    Face detected  → PhotoGuard-style VAE encoder attack (GPU via Modal)
+    No face        → Fast 4-layer pipeline (CPU, <0.15s)
+
+  Routing is EXCLUSIVE: faces get ONLY PhotoGuard, non-face images get
+  ONLY the existing pipeline.  This keeps timing predictable: ~5-7s for
+  face images (warm Modal), ~0.15s for non-face images.
+
+Non-face protection layers (all fast, <1 s per image):
   1. UAP application   -- precomputed universal adversarial perturbation
   2. ViT patch disruption -- subtle edges at 14px / 16px grid boundaries
   3. Prompt injection overlay -- adaptive-delta text tiled across image
@@ -22,12 +31,15 @@ Usage
 -----
     python image_hardener.py -i photo.jpg -o protected.jpg
     python image_hardener.py -i photo.png -o protected.png --seed "a3f8..."
+    python image_hardener.py -i photo.jpg -o out.jpg --no-detect-faces
+    python image_hardener.py -i photo.jpg -o out.jpg --use-modal --seed "a3f8..."
     python image_hardener.py -i photo.jpg -o out.jpg --no-uap --overlay-delta 20
     python image_hardener.py -i photo.jpg -o out.jpg --no-overlay --quality 85
 """
 
 import argparse
 import hashlib
+import io
 import math
 import os
 import struct
@@ -36,6 +48,22 @@ import time
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
+
+# ---------------------------------------------------------------------------
+# Optional face detection imports
+# ---------------------------------------------------------------------------
+
+try:
+    from face_guard import detect_faces, protect_faces
+    FACE_GUARD_AVAILABLE = True
+except ImportError:
+    FACE_GUARD_AVAILABLE = False
+
+try:
+    from modal_face_guard import protect_faces_remote
+    MODAL_AVAILABLE = True
+except ImportError:
+    MODAL_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
 # Seed derivation  (identical to pdf_hardener.py)
@@ -418,6 +446,11 @@ def harden_image(
     apply_metadata: bool = True,
     overlay_delta: int = 20,
     jpeg_quality: int = 92,
+    detect_faces_flag: bool = True,
+    face_device: str = "auto",
+    face_iters: int = 200,
+    face_eps: float = 0.06,
+    use_modal: bool = False,
 ):
     """Run the full image hardening pipeline.
 
@@ -443,6 +476,16 @@ def harden_image(
         Text overlay delta (intensity).
     jpeg_quality : int
         JPEG save quality (ignored for PNG).
+    detect_faces_flag : bool
+        Whether to run face detection and route accordingly.
+    face_device : str
+        Device for face protection: "auto", "cuda", or "cpu".
+    face_iters : int
+        PGD iterations for face protection (200 = ~5-7s on A10G).
+    face_eps : float
+        L-infinity perturbation budget for face protection.
+    use_modal : bool
+        Force using Modal cloud GPU for face protection.
     """
     t0 = time.time()
     rng = np.random.default_rng(seed)
@@ -451,6 +494,90 @@ def harden_image(
     img = Image.open(input_path).convert("RGB")
     W, H = img.size
     print(f"[IMAGE] Size: {W}x{H}")
+
+    # =====================================================================
+    # Face detection gate (exclusive routing)
+    # =====================================================================
+    if detect_faces_flag:
+        boxes = None
+
+        # Try face detection
+        if FACE_GUARD_AVAILABLE:
+            print("[IMAGE] Running face detection (MTCNN)...")
+            det_start = time.time()
+            boxes = detect_faces(img, device="cpu")
+            det_time = time.time() - det_start
+            if boxes is not None:
+                print(f"[IMAGE] Detected {len(boxes)} face(s) in {det_time:.2f}s")
+            else:
+                print(f"[IMAGE] No faces detected ({det_time:.2f}s)")
+        else:
+            print("[IMAGE] face_guard not available, skipping face detection")
+
+        # EXCLUSIVE ROUTING: if faces found, use face protection ONLY
+        if boxes is not None and len(boxes) > 0:
+            print("[IMAGE] >>> FACE PATH: routing to PhotoGuard VAE attack")
+
+            if use_modal:
+                # Modal cloud GPU path
+                if not MODAL_AVAILABLE:
+                    print("[ERROR] --use-modal specified but modal_face_guard not importable")
+                    print("[ERROR] Install: pip install modal && modal token new")
+                    sys.exit(1)
+
+                # Encode image to bytes for Modal transfer
+                buf = io.BytesIO()
+                img.save(buf, "JPEG", quality=95)
+                img_bytes = buf.getvalue()
+
+                result_bytes = protect_faces_remote(
+                    image_bytes=img_bytes,
+                    face_boxes=boxes.tolist(),
+                    seed=seed,
+                    eps=face_eps,
+                    iters=face_iters,
+                    jpeg_quality=jpeg_quality,
+                )
+
+                # Save result bytes directly
+                with open(output_path, "wb") as f:
+                    f.write(result_bytes)
+
+            else:
+                # Local GPU / CPU path
+                if face_device == "auto":
+                    try:
+                        import torch
+                        face_device = "cuda" if torch.cuda.is_available() else "cpu"
+                    except ImportError:
+                        face_device = "cpu"
+                    print(f"[IMAGE] Auto-detected face device: {face_device}")
+
+                result = protect_faces(
+                    img=img,
+                    boxes=boxes,
+                    seed=seed,
+                    device=face_device,
+                    eps=face_eps,
+                    iters=face_iters,
+                )
+
+                # Save
+                ext = os.path.splitext(output_path)[1].lower()
+                if ext in (".jpg", ".jpeg"):
+                    result.save(output_path, "JPEG", quality=jpeg_quality)
+                elif ext == ".png":
+                    result.save(output_path, "PNG")
+                else:
+                    result.save(output_path)
+
+            elapsed = time.time() - t0
+            out_size = os.path.getsize(output_path)
+            print(f"[IMAGE] Face protection done in {elapsed:.2f}s  ({out_size:,} bytes)")
+            return  # EXCLUSIVE: skip non-face pipeline
+
+        # If no faces, fall through to standard pipeline
+        print("[IMAGE] >>> NON-FACE PATH: routing to standard 4-layer pipeline")
 
     img_arr = np.array(img)
 
@@ -522,6 +649,21 @@ def main():
     ap.add_argument("--quality", type=int, default=92,
                     help="JPEG output quality (default: 92)")
 
+    # Face detection flags
+    face_group = ap.add_mutually_exclusive_group()
+    face_group.add_argument("--detect-faces", action="store_true", default=True,
+                            help="Enable face detection routing (default: enabled)")
+    face_group.add_argument("--no-detect-faces", action="store_true",
+                            help="Disable face detection, always use standard pipeline")
+    ap.add_argument("--face-device", type=str, default="auto",
+                    help="Device for face protection: 'auto', 'cuda', or 'cpu' (default: auto)")
+    ap.add_argument("--face-iters", type=int, default=200,
+                    help="PGD iterations for face protection (default: 200)")
+    ap.add_argument("--face-eps", type=float, default=0.06,
+                    help="PGD epsilon for face protection (default: 0.06)")
+    ap.add_argument("--use-modal", action="store_true",
+                    help="Use Modal cloud GPU for face protection (requires modal setup)")
+
     args = ap.parse_args()
 
     # Derive seed
@@ -543,6 +685,11 @@ def main():
         apply_metadata=not args.no_metadata,
         overlay_delta=args.overlay_delta,
         jpeg_quality=args.quality,
+        detect_faces_flag=not args.no_detect_faces,
+        face_device=args.face_device,
+        face_iters=args.face_iters,
+        face_eps=args.face_eps,
+        use_modal=args.use_modal,
     )
 
 
