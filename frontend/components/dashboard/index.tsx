@@ -3,7 +3,9 @@
 import { useAuth } from "@/lib/auth/auth-provider";
 import { AppSidebar } from "./app-sidebar";
 import { CreateSection } from "./create-section";
+import { FileStorageSection } from "./file-storage-section";
 import { SiteHeader } from "./site-header";
+import { WalletHistorySection } from "./wallet-history-section";
 import {
   SidebarProvider,
   useSidebar,
@@ -47,10 +49,18 @@ export function Dashboard() {
       <DashboardLayout>
         <SiteHeader />
         <div className="flex flex-1 min-h-0">
-          <div className="w-1/2 min-w-0 flex flex-col">
+          {/* Left: wallet/org selectors + upload */}
+          <div className="w-2/5 min-w-0 flex flex-col">
             <CreateSection />
           </div>
-          <div className="w-1/2 min-w-0" />
+          {/* Middle: wallet transaction history */}
+          <div className="w-1/4 min-w-0 flex flex-col">
+            <WalletHistorySection />
+          </div>
+          {/* Right: folder/file storage */}
+          <div className="w-[35%] min-w-0 flex flex-col">
+            <FileStorageSection />
+          </div>
         </div>
       </DashboardLayout>
     </SidebarProvider>

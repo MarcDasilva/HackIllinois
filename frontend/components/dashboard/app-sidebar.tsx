@@ -17,12 +17,14 @@ import {
   IconSettings,
   IconUsers,
   IconWallet,
+  IconBuilding,
 } from "@tabler/icons-react";
 
 import { NavDocuments } from "@/components/dashboard/nav-documents";
 import { NavMain } from "@/components/dashboard/nav-main";
 import { NavSecondary } from "@/components/dashboard/nav-secondary";
 import { NavUser } from "@/components/dashboard/nav-user";
+import { OrganizationsSection } from "@/components/dashboard/organizations-section";
 import { WalletsSection } from "@/components/dashboard/wallets-section";
 import {
   Sidebar,
@@ -52,6 +54,7 @@ export function AppSidebar({
   onSignOut?: () => void;
 }) {
   const [walletsOpen, setWalletsOpen] = React.useState(false);
+  const [orgsOpen, setOrgsOpen] = React.useState(false);
   const data = {
     user,
     navMain: [
@@ -194,6 +197,12 @@ export function AppSidebar({
                   <span>Wallets</span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
+              <SidebarMenuItem>
+                <SidebarMenuButton onClick={() => setOrgsOpen(true)}>
+                  <IconBuilding />
+                  <span>Organizations</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
@@ -203,16 +212,16 @@ export function AppSidebar({
       </SidebarFooter>
 
       <Sheet open={walletsOpen} onOpenChange={setWalletsOpen}>
-        <SheetContent
-          side="right"
-          className="w-full sm:max-w-lg overflow-y-auto"
-        >
-          <SheetHeader>
-            <SheetTitle>Wallets</SheetTitle>
-          </SheetHeader>
-          <div className="mt-6">
-            <WalletsSection showHeading={false} />
-          </div>
+        <SheetContent side="right" className="w-full sm:max-w-lg overflow-y-auto">
+          <SheetHeader><SheetTitle>Wallets</SheetTitle></SheetHeader>
+          <div className="mt-6"><WalletsSection showHeading={false} /></div>
+        </SheetContent>
+      </Sheet>
+
+      <Sheet open={orgsOpen} onOpenChange={setOrgsOpen}>
+        <SheetContent side="right" className="w-full sm:max-w-lg overflow-y-auto">
+          <SheetHeader><SheetTitle>Organizations</SheetTitle></SheetHeader>
+          <div className="mt-6"><OrganizationsSection showHeading={false} /></div>
         </SheetContent>
       </Sheet>
     </Sidebar>
