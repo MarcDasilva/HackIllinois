@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { X, CheckCircle2, XCircle, ChevronDown, ChevronRight, FileText, RefreshCw } from "lucide-react";
+import { X, CheckCircle2, XCircle, ChevronDown, ChevronRight, FileText, RefreshCw, History } from "lucide-react";
 
 export type EncryptTrigger = "on_update" | "daily" | "hourly";
 export type EncryptContentTypes = "images" | "pdfs" | "both";
@@ -53,6 +53,118 @@ function getSupabase() {
 
 type DriveFileItem = { id: string; name: string };
 type FileEncryptionStatus = { last_encrypted_at: string | null; last_encryption_success: boolean | null };
+type SyncHistoryEntry = { id: string; synced_at: string; success: boolean; error_message: string | null };
+
+function FileRow({
+  file,
+  status,
+  userId,
+}: {
+  file: DriveFileItem;
+  status: FileEncryptionStatus | undefined;
+  userId: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [history, setHistory] = useState<SyncHistoryEntry[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  const lastAt = status?.last_encrypted_at ?? null;
+  const success = status?.last_encryption_success;
+
+  const loadHistory = async () => {
+    if (history.length > 0) return;
+    const supabase = getSupabase();
+    if (!supabase) return;
+    setHistoryLoading(true);
+    try {
+      const { data } = await supabase
+        .from("sync_history")
+        .select("id, synced_at, success, error_message")
+        .eq("user_id", userId)
+        .eq("drive_file_id", file.id)
+        .order("synced_at", { ascending: false })
+        .limit(50);
+      setHistory(data ?? []);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  const toggle = () => {
+    const next = !expanded;
+    setExpanded(next);
+    if (next) loadHistory();
+  };
+
+  return (
+    <li className="rounded-md bg-muted/30 hover:bg-muted/50">
+      <div className="flex items-center gap-2 px-2 py-1.5 text-sm">
+        <FileText className="size-4 shrink-0 text-muted-foreground" />
+        <span className="flex-1 truncate min-w-0" title={file.name}>
+          {file.name}
+        </span>
+        <span className="text-xs text-muted-foreground shrink-0">
+          {lastAt
+            ? new Date(lastAt).toLocaleString(undefined, {
+                dateStyle: "short",
+                timeStyle: "short",
+              })
+            : "—"}
+          {lastAt && success === true && (
+            <CheckCircle2
+              className="size-3.5 inline-block ml-1 text-green-600 dark:text-green-500"
+              aria-label="Encrypted successfully"
+            />
+          )}
+        </span>
+        <button
+          type="button"
+          onClick={toggle}
+          className="shrink-0 p-0.5 rounded hover:bg-muted-foreground/20 transition-colors"
+          aria-label="Show sync history"
+        >
+          {expanded ? (
+            <ChevronDown className="size-4 text-muted-foreground" />
+          ) : (
+            <History className="size-4 text-muted-foreground" />
+          )}
+        </button>
+      </div>
+      {expanded && (
+        <div className="px-3 pb-2 pt-0">
+          {historyLoading ? (
+            <p className="text-xs text-muted-foreground py-1">Loading…</p>
+          ) : history.length === 0 ? (
+            <p className="text-xs text-muted-foreground py-1">No sync history</p>
+          ) : (
+            <ul className="space-y-0.5 max-h-40 overflow-y-auto">
+              {history.map((entry) => (
+                <li key={entry.id} className="flex items-center gap-2 text-xs py-0.5">
+                  {entry.success ? (
+                    <CheckCircle2 className="size-3 shrink-0 text-green-600 dark:text-green-500" />
+                  ) : (
+                    <XCircle className="size-3 shrink-0 text-destructive" />
+                  )}
+                  <span className="text-muted-foreground">
+                    {new Date(entry.synced_at).toLocaleString(undefined, {
+                      dateStyle: "short",
+                      timeStyle: "medium",
+                    })}
+                  </span>
+                  {entry.error_message && (
+                    <span className="text-destructive truncate" title={entry.error_message}>
+                      {entry.error_message}
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </li>
+  );
+}
 
 type DriveFolderSettingsPanelProps = {
   open: boolean;
@@ -450,36 +562,14 @@ export function DriveFolderSettingsPanel({
                 <p className="text-xs text-muted-foreground py-2">No documents in this folder</p>
               ) : (
                 <ul className="space-y-1 overflow-y-auto min-h-0">
-                  {driveFiles.map((file) => {
-                    const status = fileStatusMap[file.id];
-                    const lastAt = status?.last_encrypted_at ?? null;
-                    const success = status?.last_encryption_success;
-                    return (
-                      <li
-                        key={file.id}
-                        className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm bg-muted/30 hover:bg-muted/50"
-                      >
-                        <FileText className="size-4 shrink-0 text-muted-foreground" />
-                        <span className="flex-1 truncate min-w-0" title={file.name}>
-                          {file.name}
-                        </span>
-                        <span className="text-xs text-muted-foreground shrink-0">
-                          {lastAt
-                            ? new Date(lastAt).toLocaleString(undefined, {
-                                dateStyle: "short",
-                                timeStyle: "short",
-                              })
-                            : "—"}
-                          {lastAt && success === true && (
-                            <CheckCircle2
-                              className="size-3.5 inline-block ml-1 text-green-600 dark:text-green-500"
-                              aria-label="Encrypted successfully"
-                            />
-                          )}
-                        </span>
-                      </li>
-                    );
-                  })}
+                  {driveFiles.map((file) => (
+                    <FileRow
+                      key={file.id}
+                      file={file}
+                      status={fileStatusMap[file.id]}
+                      userId={user!.id}
+                    />
+                  ))}
                 </ul>
               )}
             </div>

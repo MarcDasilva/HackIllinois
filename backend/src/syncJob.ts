@@ -109,6 +109,15 @@ export async function executeSyncFolder(req: SyncFolderRequest): Promise<SyncFol
           },
           { onConflict: "user_id,drive_file_id" }
         );
+
+        await supabase.from("sync_history").insert({
+          user_id,
+          drive_file_id: file.id,
+          drive_file_name: file.name,
+          drive_folder_id,
+          synced_at: now,
+          success: true,
+        });
       } catch (err) {
         failed += 1;
         const msg = `${file.name}: ${err instanceof Error ? err.message : String(err)}`;
@@ -124,6 +133,16 @@ export async function executeSyncFolder(req: SyncFolderRequest): Promise<SyncFol
           },
           { onConflict: "user_id,drive_file_id" }
         );
+
+        await supabase.from("sync_history").insert({
+          user_id,
+          drive_file_id: file.id,
+          drive_file_name: file.name,
+          drive_folder_id,
+          synced_at: now,
+          success: false,
+          error_message: err instanceof Error ? err.message : String(err),
+        });
       }
     }
 
