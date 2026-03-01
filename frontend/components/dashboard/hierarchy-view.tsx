@@ -14,6 +14,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useAuth } from "@/lib/auth/auth-provider";
+import { DriveFolderSettingsPanel } from "@/components/dashboard/drive-folder-settings-panel";
 
 const FOLDER_MIME = "application/vnd.google-apps.folder";
 
@@ -115,6 +116,7 @@ function HierarchyFlowInner() {
   const [error, setError] = useState<string | null>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  const [settingsFolder, setSettingsFolder] = useState<{ id: string; name: string } | null>(null);
 
   const loadRootFolders = useCallback(async () => {
     if (!providerToken) return;
@@ -214,6 +216,10 @@ function HierarchyFlowInner() {
           edges={edges}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
+          onNodeClick={(_e, node) => {
+            const label = typeof node.data?.label === "string" ? node.data.label : "Folder";
+            setSettingsFolder({ id: node.id, name: label });
+          }}
           fitView
           fitViewOptions={{ padding: 0.2 }}
           defaultEdgeOptions={{ type: "smoothstep" }}
@@ -223,6 +229,14 @@ function HierarchyFlowInner() {
           <MiniMap />
         </ReactFlow>
       </div>
+      {settingsFolder && (
+        <DriveFolderSettingsPanel
+          open={!!settingsFolder}
+          onOpenChange={(open) => !open && setSettingsFolder(null)}
+          driveFolderId={settingsFolder.id}
+          driveFolderName={settingsFolder.name}
+        />
+      )}
     </div>
   );
 }

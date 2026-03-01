@@ -1,10 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { ExternalLink, File, Folder, RefreshCw } from "lucide-react";
+import { ExternalLink, File, Folder, RefreshCw, Settings } from "lucide-react";
 import { useAuth } from "@/lib/auth/auth-provider";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { DriveFolderSettingsPanel } from "@/components/dashboard/drive-folder-settings-panel";
 
 type DriveFile = {
   id: string;
@@ -33,7 +34,13 @@ function formatDate(iso?: string): string {
   });
 }
 
-function DriveFileRow({ file }: { file: DriveFile }) {
+function DriveFileRow({
+  file,
+  onOpenSettings,
+}: {
+  file: DriveFile;
+  onOpenSettings?: (file: DriveFile) => void;
+}) {
   const isFolder = file.mimeType === FOLDER_MIME;
   return (
     <li className="group flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted/40 transition-colors">
@@ -44,6 +51,16 @@ function DriveFileRow({ file }: { file: DriveFile }) {
       <span className="text-xs text-muted-foreground/50 shrink-0 hidden group-hover:inline">
         {formatSize(file.size) || formatDate(file.modifiedTime)}
       </span>
+      {isFolder && onOpenSettings && (
+        <button
+          type="button"
+          className="shrink-0 text-muted-foreground/40 hover:text-foreground opacity-0 group-hover:opacity-100 p-1 rounded"
+          onClick={(e) => { e.stopPropagation(); onOpenSettings(file); }}
+          aria-label={`Settings for ${file.name}`}
+        >
+          <Settings className="size-3" />
+        </button>
+      )}
       {file.webViewLink && (
         <a
           href={file.webViewLink}
@@ -70,6 +87,7 @@ export function GoogleDriveSection() {
   const [breadcrumbs, setBreadcrumbs] = useState<{ id: string; name: string }[]>([
     { id: "root", name: "My Drive" },
   ]);
+  const [settingsFolder, setSettingsFolder] = useState<{ id: string; name: string } | null>(null);
 
   const fetchFiles = useCallback(async (folder: string, token?: string) => {
     if (!providerToken) return;
@@ -142,6 +160,21 @@ export function GoogleDriveSection() {
             </button>
           </span>
         ))}
+        {breadcrumbs.length > 0 && (
+          <button
+            type="button"
+            className="ml-1 p-1 rounded text-muted-foreground hover:text-foreground"
+            onClick={() =>
+              setSettingsFolder({
+                id: breadcrumbs[breadcrumbs.length - 1].id,
+                name: breadcrumbs[breadcrumbs.length - 1].name,
+              })
+            }
+            aria-label="Folder settings"
+          >
+            <Settings className="size-3" />
+          </button>
+        )}
         <Button
           type="button" variant="ghost" size="icon"
           className="h-5 w-5 ml-auto text-muted-foreground hover:text-foreground"
@@ -167,7 +200,12 @@ export function GoogleDriveSection() {
                 onClick={() => openFolder(file)}
                 className={file.mimeType === FOLDER_MIME ? "cursor-pointer" : ""}
               >
-                <DriveFileRow file={file} />
+                <DriveFileRow
+                  file={file}
+                  onOpenSettings={(f) =>
+                    setSettingsFolder({ id: f.id, name: f.name })
+                  }
+                />
               </div>
             ))}
           </ul>
@@ -182,6 +220,14 @@ export function GoogleDriveSection() {
             </Button>
           )}
         </>
+      )}
+      {settingsFolder && (
+        <DriveFolderSettingsPanel
+          open={!!settingsFolder}
+          onOpenChange={(open) => !open && setSettingsFolder(null)}
+          driveFolderId={settingsFolder.id}
+          driveFolderName={settingsFolder.name}
+        />
       )}
     </div>
   );
