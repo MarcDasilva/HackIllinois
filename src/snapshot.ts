@@ -10,6 +10,7 @@
 
 import { Connection, PublicKey } from "@solana/web3.js";
 import * as crypto from "crypto";
+import { fetchTokenAccountPubkeys } from "./supabase";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -41,46 +42,57 @@ export interface ChainSnapshot {
 // ─── Token Account Loader ─────────────────────────────────────────────────────
 
 /**
- * Load exactly 30 token account pubkeys.
- * Priority: TOKEN_ACCOUNTS env var → config/token_accounts.json
+ * Load token account pubkeys.
+ * Priority: TOKEN_ACCOUNTS env var -> Supabase token_accounts table -> config/token_accounts.json
  */
-export function loadTokenAccounts(): PublicKey[] {
+export async function loadTokenAccounts(): Promise<PublicKey[]> {
   const envList = process.env.TOKEN_ACCOUNTS;
   let rawKeys: string[];
 
   if (envList && envList.trim().length > 0) {
     rawKeys = envList.split(",").map((k) => k.trim()).filter(Boolean);
   } else {
-    // Lazy-require the config file
-    const configPath = process.cwd() + "/config/token_accounts.json";
-    let parsed: unknown;
     try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      parsed = require(configPath) as unknown;
-    } catch {
-      throw new Error(
-        `No TOKEN_ACCOUNTS env var set and config file not found at "${configPath}". ` +
-          `Copy config/token_accounts.example.json → config/token_accounts.json and fill in 30 pubkeys.`
-      );
-    }
-
-    if (!Array.isArray(parsed)) {
-      throw new Error(
-        `"config/token_accounts.json" must be a JSON array of public key strings.`
-      );
-    }
-    rawKeys = (parsed as unknown[]).map((v) => {
-      if (typeof v !== "string") {
-        throw new Error(`Each entry in token_accounts.json must be a string; got ${typeof v}`);
+      const tokenResult = await fetchTokenAccountPubkeys();
+      rawKeys = tokenResult.pubkeys;
+      if (rawKeys.length === 0) {
+        throw new Error(
+          `Supabase token table "${tokenResult.table}" returned 0 rows. ` +
+            `Seed it first or set TOKEN_ACCOUNTS in .env.`
+        );
       }
-      return v.trim();
-    });
+    } catch (supabaseErr) {
+      // Final fallback: local config file for backwards compatibility.
+      const configPath = process.cwd() + "/config/token_accounts.json";
+      let parsed: unknown;
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        parsed = require(configPath) as unknown;
+      } catch {
+        throw new Error(
+          `No TOKEN_ACCOUNTS env var, Supabase token seed failed, and config file not found at "${configPath}". ` +
+            `Supabase error: ${String(supabaseErr)}`
+        );
+      }
+
+      if (!Array.isArray(parsed)) {
+        throw new Error(
+          `"config/token_accounts.json" must be a JSON array of public key strings.`
+        );
+      }
+      rawKeys = (parsed as unknown[]).map((v) => {
+        if (typeof v !== "string") {
+          throw new Error(`Each entry in token_accounts.json must be a string; got ${typeof v}`);
+        }
+        return v.trim();
+      });
+    }
   }
 
-  if (rawKeys.length !== 30) {
+  if (rawKeys.length === 0) {
     throw new Error(
-      `Expected exactly 30 token account pubkeys, got ${rawKeys.length}. ` +
-        `Check TOKEN_ACCOUNTS env var or config/token_accounts.json.`
+      `Expected at least 1 token account pubkey, got ${rawKeys.length}. ` +
+        `Check TOKEN_ACCOUNTS, Supabase token seed, or config/token_accounts.json.`
     );
   }
 

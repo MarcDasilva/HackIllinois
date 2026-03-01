@@ -1,17 +1,15 @@
 /**
  * scripts/bootstrap.ts
  *
- * One-time setup script: creates 30 SPL token accounts on devnet
- * (using a single shared mint for simplicity) and writes their
- * public keys to config/token_accounts.json.
+ * One-time setup script: creates ~100 SPL token accounts on devnet
+ * (using a single shared mint for simplicity) and upserts their
+ * public keys into a Supabase table (default: public.token_accounts).
  *
  * Run once:
  *   npx ts-node scripts/bootstrap.ts
  */
 
 import "dotenv/config";
-import * as fs from "fs";
-import * as path from "path";
 import {
   Keypair,
   PublicKey,
@@ -30,11 +28,40 @@ import {
   createAssociatedTokenAccountInstruction,
   createMintToInstruction,
 } from "@solana/spl-token";
+import { createClient } from "@supabase/supabase-js";
 
 import { createConnection, loadKeypair } from "../src/solana";
 
-const NUM_ACCOUNTS = 30;
-const CONFIG_PATH = path.join(process.cwd(), "config", "token_accounts.json");
+const NUM_ACCOUNTS = parsePositiveInt(process.env.TOKEN_BOOTSTRAP_COUNT, 100);
+const TOKEN_TABLE = process.env.SUPABASE_TOKEN_TABLE?.trim() || "token_accounts";
+const TOKEN_COLUMN = process.env.SUPABASE_TOKEN_COLUMN?.trim() || "pubkey";
+
+function parsePositiveInt(raw: string | undefined, fallback: number): number {
+  const parsed = parseInt(raw ?? "", 10);
+  if (isNaN(parsed) || parsed < 1) return fallback;
+  return parsed;
+}
+
+function createSupabaseServiceClient() {
+  const url = process.env.SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_KEY;
+
+  if (!url || url.trim() === "") {
+    throw new Error("SUPABASE_URL is required to seed token accounts.");
+  }
+
+  if (!serviceKey || serviceKey.trim() === "") {
+    throw new Error("SUPABASE_SERVICE_KEY is required to seed token accounts.");
+  }
+
+  return createClient(url, serviceKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+  });
+}
 
 async function main() {
   const connection = createConnection();
@@ -70,7 +97,7 @@ async function main() {
   });
   console.log(`[bootstrap] Mint: ${mint.publicKey.toBase58()}`);
 
-  // ── Create 30 associated token accounts ───────────────────────────────────
+  // ── Create associated token accounts ──────────────────────────────────────
   // We create wallets for each ATA so they're distinct accounts
   console.log(`\n[bootstrap] Creating ${NUM_ACCOUNTS} token accounts…`);
   const tokenAccountPubkeys: string[] = [];
@@ -145,9 +172,21 @@ async function main() {
     }
   }
 
-  // ── Write config ───────────────────────────────────────────────────────────
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(tokenAccountPubkeys, null, 2) + "\n", "utf8");
-  console.log(`\n[bootstrap] Written to ${CONFIG_PATH}`);
+  // ── Upsert into Supabase ───────────────────────────────────────────────────
+  const supabase = createSupabaseServiceClient();
+  const rows = tokenAccountPubkeys.map((pubkey) => ({ [TOKEN_COLUMN]: pubkey }));
+
+  const { error } = await supabase
+    .from(TOKEN_TABLE)
+    .upsert(rows, { onConflict: TOKEN_COLUMN, ignoreDuplicates: false });
+
+  if (error) {
+    throw new Error(
+      `Failed to upsert token accounts into table "${TOKEN_TABLE}": ${error.message} (code: ${error.code})`
+    );
+  }
+
+  console.log(`\n[bootstrap] Upserted ${rows.length} token accounts into Supabase table "${TOKEN_TABLE}"`);
   console.log(`[bootstrap] Done! Run: npm run dev`);
 }
 

@@ -14,6 +14,7 @@
 import "dotenv/config";
 import * as fs from "fs";
 import * as path from "path";
+import { PublicKey } from "@solana/web3.js";
 
 import { createConnection, loadKeypair, getBalanceSol } from "./solana";
 import { loadTokenAccounts, fetchSnapshot } from "./snapshot";
@@ -57,7 +58,7 @@ function appendCommit(record: CommitRecord): void {
 async function runTick(
   connection: ReturnType<typeof createConnection>,
   payer: ReturnType<typeof loadKeypair>,
-  tokenPubkeys: ReturnType<typeof loadTokenAccounts>,
+  tokenPubkeys: PublicKey[],
   dryRun: boolean
 ): Promise<void> {
   const tickStart = Date.now();
@@ -176,7 +177,7 @@ async function main(): Promise<void> {
   // Validate Supabase connection at startup (fail fast if misconfigured)
   await validateSupabaseConnection();
 
-  const tokenPubkeys = loadTokenAccounts();
+  const tokenPubkeys = await loadTokenAccounts();
   console.log(`[index] Loaded ${tokenPubkeys.length} token accounts.`);
 
   let running = true;

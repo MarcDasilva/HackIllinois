@@ -35,6 +35,15 @@ export interface DocumentIdResult {
   count: number;
 }
 
+export interface TokenAccountResult {
+  /** Sorted list of token account pubkeys fetched from Supabase. */
+  pubkeys: string[];
+  /** Name of the table that was queried. */
+  table: string;
+  /** Number of rows returned. */
+  count: number;
+}
+
 // ─── Config ───────────────────────────────────────────────────────────────────
 
 function getConfig(): {
@@ -64,10 +73,26 @@ function getConfig(): {
 
   const table = process.env.SUPABASE_TABLE?.trim() || "documents";
   const idColumn = process.env.SUPABASE_ID_COLUMN?.trim() || "id";
-  const limitRaw = parseInt(process.env.SUPABASE_LIMIT ?? "1000", 10);
-  const limit = isNaN(limitRaw) || limitRaw < 1 ? 1000 : limitRaw;
+  const limit = parsePositiveInt(process.env.SUPABASE_LIMIT, 1000);
 
   return { url, serviceKey, table, idColumn, limit };
+}
+
+function getTokenAccountConfig(): {
+  table: string;
+  keyColumn: string;
+  limit: number;
+} {
+  const table = process.env.SUPABASE_TOKEN_TABLE?.trim() || "token_accounts";
+  const keyColumn = process.env.SUPABASE_TOKEN_COLUMN?.trim() || "pubkey";
+  const limit = parsePositiveInt(process.env.SUPABASE_TOKEN_LIMIT, 100);
+  return { table, keyColumn, limit };
+}
+
+function parsePositiveInt(raw: string | undefined, fallback: number): number {
+  const parsed = parseInt(raw ?? "", 10);
+  if (isNaN(parsed) || parsed < 1) return fallback;
+  return parsed;
 }
 
 // ─── Client factory (singleton) ───────────────────────────────────────────────
@@ -143,6 +168,56 @@ export async function fetchDocumentIds(): Promise<DocumentIdResult> {
   ids.sort();
 
   return { ids, table, count: ids.length };
+}
+
+/**
+ * Fetches token account pubkeys from a dedicated Supabase table.
+ *
+ * The returned pubkeys are sorted lexicographically so downstream
+ * snapshot ordering is deterministic.
+ */
+export async function fetchTokenAccountPubkeys(): Promise<TokenAccountResult> {
+  const { table, keyColumn, limit } = getTokenAccountConfig();
+  const client = getSupabaseClient();
+
+  const { data, error } = await client
+    .from(table)
+    .select(keyColumn)
+    .limit(limit)
+    .order(keyColumn, { ascending: true });
+
+  if (error) {
+    throw new Error(
+      `Supabase token account query failed on table "${table}": ${error.message} (code: ${error.code})\n` +
+        `  Check SUPABASE_TOKEN_TABLE/SUPABASE_TOKEN_COLUMN and confirm the table exists.`
+    );
+  }
+
+  if (!Array.isArray(data)) {
+    throw new Error(
+      `Supabase returned unexpected data format for token accounts table "${table}". Expected an array.`
+    );
+  }
+
+  const pubkeys: string[] = [];
+
+  for (let i = 0; i < data.length; i++) {
+    const row = data[i] as unknown as Record<string, unknown>;
+    const val = row[keyColumn];
+
+    if (val === null || val === undefined) {
+      console.warn(`[supabase] Token row ${i} has null/undefined "${keyColumn}" - skipping.`);
+      continue;
+    }
+
+    const key = String(val).trim();
+    if (key.length === 0) continue;
+    pubkeys.push(key);
+  }
+
+  pubkeys.sort();
+
+  return { pubkeys, table, count: pubkeys.length };
 }
 
 // ─── Validation helper ────────────────────────────────────────────────────────

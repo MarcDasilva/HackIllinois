@@ -2,7 +2,7 @@
 
 A minimal, production-lean Node.js + TypeScript backend that:
 
-1. Fetches Solana devnet state (slot + latest blockhash) and 30 token account states every N seconds.
+1. Fetches Solana devnet state (slot + latest blockhash) and ~100 token account states every N seconds.
 2. Fetches row UUIDs from a **Supabase** table (your document IDs).
 3. Computes a deterministic **SHA3-256 entropy seed** from all three sources — token state + doc IDs + chain values.
 4. Commits only the **hash** of the doc IDs on-chain via the **SPL Memo program** (raw IDs never leave your backend).
@@ -25,10 +25,10 @@ A minimal, production-lean Node.js + TypeScript backend that:
 │   ├── verifyMemo.ts     # CLI: fetch tx and verify LAVA_V1 memo
 │   └── bs58shim.ts       # Internal: bs58 re-export for verifier fallback
 ├── scripts/
-│   └── bootstrap.ts      # One-time: create 30 devnet token accounts
+│   └── bootstrap.ts      # One-time: create ~100 devnet token accounts + seed Supabase
 ├── config/
-│   ├── token_accounts.example.json   # Example: 30 token account pubkeys
-│   └── token_accounts.json           # Your actual keys (git-ignored)
+│   ├── token_accounts.example.json   # Optional local fallback only
+│   └── token_accounts.json           # Optional local fallback (git-ignored)
 ├── data/                             # Persisted commits (git-ignored)
 │   └── commits.jsonl
 ├── .env.example
@@ -70,7 +70,7 @@ Edit `.env` — Supabase vars are required, Solana vars have devnet defaults:
 SOLANA_RPC_URL=https://api.devnet.solana.com
 SOLANA_KEYPAIR_PATH=~/.config/solana/id.json
 ENTROPY_INTERVAL_MS=5000
-TOKEN_ACCOUNTS=          # leave blank to use config/token_accounts.json
+TOKEN_ACCOUNTS=          # optional override; leave blank to use Supabase token_accounts table
 DRY_RUN=false
 
 SUPABASE_URL=https://your-project-ref.supabase.co
@@ -78,6 +78,9 @@ SUPABASE_SERVICE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 SUPABASE_TABLE=documents
 SUPABASE_ID_COLUMN=id
 SUPABASE_LIMIT=1000
+SUPABASE_TOKEN_TABLE=token_accounts
+SUPABASE_TOKEN_COLUMN=pubkey
+SUPABASE_TOKEN_LIMIT=100
 ```
 
 ### 3. Configure Supabase
@@ -102,24 +105,32 @@ solana-keygen new --outfile ~/.config/solana/id.json
 solana airdrop 2 --url https://api.devnet.solana.com
 ```
 
-### 5. Configure token accounts
+### 5. Seed token accounts in Supabase (~100)
 
-Option A — environment variable (comma-separated, exactly 30 keys):
+First, run this migration in Supabase SQL Editor:
+
+```
+supabase/migrations/20260228123000_add_token_accounts.sql
+```
+
+Run the bootstrap script to create fresh devnet token accounts and upsert them into Supabase:
+
+```bash
+npm run bootstrap:tokens
+```
+
+Optional: override via `.env` (comma-separated list):
+
 ```bash
 # In .env:
-TOKEN_ACCOUNTS=Pubkey1,Pubkey2,...,Pubkey30
+TOKEN_ACCOUNTS=Pubkey1,Pubkey2,...
 ```
 
-Option B — bootstrap script (creates 30 fresh ATAs on devnet automatically):
-```bash
-npx ts-node scripts/bootstrap.ts
-# Writes config/token_accounts.json automatically
-```
+Legacy fallback (local file) is still supported:
 
-Option C — config file (bring your own):
 ```bash
 cp config/token_accounts.example.json config/token_accounts.json
-# Edit with 30 real devnet token account pubkeys
+# Edit with real devnet token account pubkeys
 ```
 
 ---
@@ -131,13 +142,16 @@ cp config/token_accounts.example.json config/token_accounts.json
 | `SOLANA_RPC_URL` | `https://api.devnet.solana.com` | Solana RPC endpoint |
 | `SOLANA_KEYPAIR_PATH` | `~/.config/solana/id.json` | Path to payer keypair JSON |
 | `ENTROPY_INTERVAL_MS` | `5000` | Milliseconds between oracle ticks |
-| `TOKEN_ACCOUNTS` | _(empty)_ | Comma-separated list of 30 token account pubkeys |
+| `TOKEN_ACCOUNTS` | _(empty)_ | Optional comma-separated token account pubkeys override |
 | `DRY_RUN` | `false` | If `true`, compute entropy but do not submit a transaction |
 | `SUPABASE_URL` | _(required)_ | Your Supabase project URL |
 | `SUPABASE_SERVICE_KEY` | _(required)_ | Supabase service role secret key |
 | `SUPABASE_TABLE` | `documents` | Table to read row IDs from |
 | `SUPABASE_ID_COLUMN` | `id` | Primary key column name |
 | `SUPABASE_LIMIT` | `1000` | Max rows fetched per tick |
+| `SUPABASE_TOKEN_TABLE` | `token_accounts` | Table to read token account pubkeys from |
+| `SUPABASE_TOKEN_COLUMN` | `pubkey` | Column name containing token account pubkeys |
+| `SUPABASE_TOKEN_LIMIT` | `100` | Max token accounts fetched per tick |
 
 ---
 
@@ -178,7 +192,7 @@ DRY_RUN=true npm run dev
   Commits    : /path/to/data/commits.jsonl
 ═══════════════════════════════════════════════════════════════
 [supabase] Connection validated — table="documents", column="id"
-[index] Loaded 30 token accounts.
+[index] Loaded 100 token accounts.
 [index] Starting oracle loop. Press Ctrl+C to stop.
 
 [tick] Fetching Supabase IDs + Solana snapshot in parallel…
@@ -281,7 +295,7 @@ entropy_seed          = sha3_256(tokens_state_hash + "|" + docs_hash + "|" + slo
 | Problem | Solution |
 |---|---|
 | `Keypair file not found` | Run `solana-keygen new` or set `SOLANA_KEYPAIR_PATH` |
-| `Expected exactly 30 token account pubkeys, got N` | Check `TOKEN_ACCOUNTS` env or `config/token_accounts.json` |
+| `Expected at least 1 token account pubkey, got 0` | Seed Supabase token_accounts table (or set `TOKEN_ACCOUNTS`) |
 | `Transaction failed: blockhash not found` | RPC is slow; the oracle retries automatically (5 attempts, exponential backoff) |
 | `Balance is low` | Run `solana airdrop 2 --url devnet` |
 | `sha3-256` not supported | Ensure Node.js ≥ 18 (ships OpenSSL 3 with SHA3 support) |
