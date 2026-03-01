@@ -163,7 +163,8 @@ export function FeaturesSection() {
             <div className="mt-4">
               <h3 className="font-serif text-xl text-foreground">Speed</h3>
               <p className="text-muted-foreground text-sm mt-1">
-                Blazing fast pages that keep visitors engaged.
+                Quick encryption and decryption of documents. No waiting for
+                pages to load.
               </p>
             </div>
           </motion.div>
