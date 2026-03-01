@@ -18,3 +18,18 @@ pnpm-debug.log*
 .DS_Store
 
 /frontend_copy
+
+test_docs/
+
+# Generated output
+output/
+hardened*.pdf
+*.veiled*.pdf
+*.veildoc.json
+*_pages/
+log.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo

@@ -1,0 +1,13 @@
+# Core
+PyMuPDF>=1.23.0
+Pillow>=10.0.0
+numpy>=1.24.0
+
+# Adversarial ML — Tier 1 (optional, needed for --attack pgd)
+# Without these, the tool falls back to Tier 2 decoy text only.
+torch>=2.0.0
+torchvision>=0.15.0
+transformers>=4.30.0
+
+# Optional — OCR evaluation (--eval-ocr)
+# pytesseract>=0.3.10
