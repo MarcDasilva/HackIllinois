@@ -7,6 +7,12 @@ import type { WorkflowNode, WorkflowEdge } from "./storage";
 
 export type StepStatus = "pending" | "running" | "pass" | "fail" | "skip" | "warn";
 
+// Minimal doc shape passed in from the caller (sourced from Supabase wallet_history)
+export interface RunnerDoc {
+  id: string;
+  name: string;
+}
+
 export interface StepResult {
   nodeId: string;
   nodeType: string;
@@ -84,7 +90,8 @@ async function fetchTransactions(accountId: string): Promise<NessieTransactions>
 
 async function evalDocumentUpload(
   node: WorkflowNode,
-  _context: Map<string, StepResult>
+  _context: Map<string, StepResult>,
+  mintedDocs: RunnerDoc[]
 ): Promise<StepResult> {
   const base = { nodeId: node.id, nodeType: node.type, label: node.label };
 
@@ -94,68 +101,42 @@ async function evalDocumentUpload(
       ...base,
       status: "fail",
       message: "No document attached",
-      detail: "Open the inspector and select a minted document.",
+      detail: "Open the block and select a minted document.",
     };
   }
 
-  // Validate the doc still exists in localStorage
-  let docName = documentId;
-  try {
-    const raw = localStorage.getItem("velum_minted_documents");
-    const docs: Array<{ id: string; name: string; type: string; size?: number }> = raw
-      ? JSON.parse(raw)
-      : [];
-    const doc = docs.find((d) => d.id === documentId);
-    if (!doc) {
-      return {
-        ...base,
-        status: "fail",
-        message: "Attached document not found",
-        detail: `Document ID ${documentId} was removed from minted documents.`,
-      };
-    }
-    docName = doc.name;
-
-    // Max size check
-    const maxMb = parseFloat(node.params.maxSizeMb ?? "");
-    if (!isNaN(maxMb) && doc.size && doc.size > maxMb * 1024 * 1024) {
-      return {
-        ...base,
-        status: "fail",
-        message: `Document exceeds size limit (${maxMb} MB)`,
-        detail: `"${doc.name}" is ${(doc.size / 1024 / 1024).toFixed(2)} MB.`,
-      };
-    }
-
-    // Type check
-    const accepted = node.params.accept
-      ? node.params.accept.split(",").map((t) => t.trim().toLowerCase())
-      : [];
-    if (accepted.length > 0) {
-      const ext = doc.name.split(".").pop()?.toLowerCase() ?? "";
-      if (!accepted.includes(ext)) {
-        return {
-          ...base,
-          status: "fail",
-          message: `File type not accepted`,
-          detail: `"${doc.name}" is .${ext}; accepted: ${accepted.join(", ")}.`,
-        };
-      }
-    }
-
+  const doc = mintedDocs.find((d) => d.id === documentId);
+  if (!doc) {
     return {
       ...base,
-      status: "pass",
-      message: `Document verified: "${docName}"`,
-      data: { documentId, documentName: docName },
-    };
-  } catch {
-    return {
-      ...base,
-      status: "warn",
-      message: "Document check skipped (storage error)",
+      status: "fail",
+      message: "Attached document not found",
+      detail: `Document ID ${documentId} could not be found in your minted documents.`,
     };
   }
+
+  // Type check (by extension from filename)
+  const accepted = node.params.accept
+    ? node.params.accept.split(",").map((t) => t.trim().toLowerCase())
+    : [];
+  if (accepted.length > 0) {
+    const ext = doc.name.split(".").pop()?.toLowerCase() ?? "";
+    if (!accepted.includes(ext)) {
+      return {
+        ...base,
+        status: "fail",
+        message: `File type not accepted`,
+        detail: `"${doc.name}" is .${ext}; accepted: ${accepted.join(", ")}.`,
+      };
+    }
+  }
+
+  return {
+    ...base,
+    status: "pass",
+    message: `Document verified: "${doc.name}"`,
+    data: { documentId, documentName: doc.name },
+  };
 }
 
 async function evalImageUpload(
@@ -325,7 +306,7 @@ async function evalTargetSource(
     return {
       ...base,
       status: "fail",
-      message: `Loan DENIED — ${failures.length} check${failures.length > 1 ? "s" : ""} failed`,
+      message: `Send FAILED — ${failures.length} check${failures.length > 1 ? "s" : ""} failed`,
       detail: failures.map((f) => `• ${f.label}: ${f.message}`).join("\n"),
       data: { decision: "denied", failures: failures.length, warnings: warnings.length },
     };
@@ -335,7 +316,7 @@ async function evalTargetSource(
     return {
       ...base,
       status: "warn",
-      message: `Loan CONDITIONALLY APPROVED — ${warnings.length} warning${warnings.length > 1 ? "s" : ""}`,
+      message: `Sent with warnings — ${warnings.length} warning${warnings.length > 1 ? "s" : ""}`,
       detail: warnings.map((w) => `• ${w.label}: ${w.message}`).join("\n"),
       data: { decision: "conditional", warnings: warnings.length },
     };
@@ -344,7 +325,7 @@ async function evalTargetSource(
   return {
     ...base,
     status: "pass",
-    message: "Loan APPROVED — all checks passed",
+    message: "Sent — all checks passed",
     detail: `${upstreamResults.length} upstream step${upstreamResults.length !== 1 ? "s" : ""} passed.`,
     data: { decision: "approved", totalSteps: upstreamResults.length },
   };
@@ -355,7 +336,8 @@ async function evalTargetSource(
 export async function runWorkflow(
   nodes: WorkflowNode[],
   edges: WorkflowEdge[],
-  onStep: (step: StepResult) => void
+  onStep: (step: StepResult) => void,
+  mintedDocs: RunnerDoc[] = []
 ): Promise<RunResult> {
   const steps: StepResult[] = [];
 
@@ -397,7 +379,7 @@ export async function runWorkflow(
     try {
       switch (node.type) {
         case "DocumentUpload":
-          result = await evalDocumentUpload(node, context);
+          result = await evalDocumentUpload(node, context, mintedDocs);
           break;
         case "ImageUpload":
           result = await evalImageUpload(node, context);
@@ -443,10 +425,10 @@ export async function runWorkflow(
     const decision = (loanStep.data?.decision as string) ?? "denied";
     if (decision === "approved") {
       finalStatus = "approved";
-      summary = "Loan approved — all checks passed.";
+      summary = "Sent — all checks passed.";
     } else if (decision === "conditional") {
       finalStatus = "approved";
-      summary = "Loan conditionally approved — review warnings.";
+      summary = "Sent with warnings — review before proceeding.";
     } else {
       finalStatus = "denied";
       summary = loanStep.message;

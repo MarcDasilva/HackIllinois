@@ -13,7 +13,8 @@ import {
   type WorkflowNode,
   type WorkflowEdge,
 } from "@/lib/workflow/storage";
-import { runWorkflow, type StepResult } from "@/lib/workflow/runner";
+import { runWorkflow, type StepResult, type RunnerDoc } from "@/lib/workflow/runner";
+import { createClient } from "@/lib/supabase/client";
 import {
   IconArrowLeft,
   IconDeviceFloppy,
@@ -47,7 +48,6 @@ import {
 
 const SIDEBAR_WIDTH = "calc(var(--spacing) * 72)";
 const BANK_PROFILES_KEY = "velum_bank_profiles";
-const MINTED_DOCS_KEY = "velum_minted_documents";
 const BANK_EVENTS_KEY = "velum_bank_events";
 const NODE_WIDTH = 180;
 const NODE_HEIGHT = 62; // approx header + description
@@ -79,13 +79,12 @@ interface BankProfile {
   createdAt: string;
 }
 
+// A minted document row from the wallet_history Supabase table (type = "minted")
 interface MintedDocument {
-  id: string;
-  name: string;
-  type: string;
-  mintedAt: string;
-  txHash?: string;
-  size?: number;
+  id: string;       // wallet_history row id
+  name: string;     // parsed from description ("Minted <name>")
+  txHash: string | null;
+  mintedAt: string; // created_at ISO string
 }
 
 interface NessieTx {
@@ -162,12 +161,6 @@ function blockDef(type: string): BlockTypeDef {
 function readBankProfiles(): BankProfile[] {
   if (typeof window === "undefined") return [];
   try { return JSON.parse(localStorage.getItem(BANK_PROFILES_KEY) ?? "[]"); }
-  catch { return []; }
-}
-
-function readMintedDocs(): MintedDocument[] {
-  if (typeof window === "undefined") return [];
-  try { return JSON.parse(localStorage.getItem(MINTED_DOCS_KEY) ?? "[]"); }
   catch { return []; }
 }
 
@@ -397,72 +390,6 @@ function EdgeLayer({
         );
       })()}
     </svg>
-  );
-}
-
-// ─── Inspector: Document Upload ───────────────────────────────────────────────
-
-function DocumentUploadInspector({ node, onChange }: { node: WorkflowNode; onChange: (n: WorkflowNode) => void }) {
-  const docs = readMintedDocs();
-  const [selected, setSelected] = useState<string>(node.params.documentId ?? "");
-
-  function pick(id: string) {
-    setSelected(id);
-    onChange({ ...node, params: { ...node.params, documentId: id } });
-  }
-
-  return (
-    <div className="flex flex-col gap-4">
-      <div>
-        <label className="text-xs text-zinc-400 mb-1 block">Label</label>
-        <input
-          className="w-full rounded-lg border px-2.5 py-1.5 text-xs text-white bg-zinc-900 border-zinc-700 focus:outline-none focus:border-zinc-500"
-          value={node.label}
-          onChange={(e) => onChange({ ...node, label: e.target.value })}
-        />
-      </div>
-      <div>
-        <p className="text-xs text-zinc-400 mb-2">Minted Documents</p>
-        {docs.length === 0 ? (
-          <div className="rounded-lg px-3 py-3 text-center" style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)" }}>
-            <IconFileText size={20} className="text-zinc-700 mx-auto mb-1" />
-            <p className="text-xs text-zinc-600">No minted documents found.</p>
-            <p className="text-xs text-zinc-700 mt-0.5">Mint documents via the Documents page.</p>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-1.5">
-            {docs.map((doc) => (
-              <button key={doc.id} onClick={() => pick(doc.id)}
-                className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-colors"
-                style={{
-                  background: selected === doc.id ? "rgba(59,130,246,0.15)" : "rgba(255,255,255,0.03)",
-                  border: `1px solid ${selected === doc.id ? "rgba(59,130,246,0.4)" : "rgba(255,255,255,0.06)"}`,
-                }}
-              >
-                <IconFileText size={12} style={{ color: selected === doc.id ? "#3b82f6" : "#52525b" }} />
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs text-white truncate">{doc.name}</p>
-                  <p className="text-xs text-zinc-600">{doc.type}</p>
-                </div>
-                {selected === doc.id && <IconCheck size={11} style={{ color: "#3b82f6" }} />}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-      <div>
-        <label className="text-xs text-zinc-400 mb-1 block">Max Size (MB)</label>
-        <input className="w-full rounded-lg border px-2.5 py-1.5 text-xs text-white bg-zinc-900 border-zinc-700 focus:outline-none focus:border-zinc-500"
-          value={node.params.maxSizeMb ?? ""} placeholder="10"
-          onChange={(e) => onChange({ ...node, params: { ...node.params, maxSizeMb: e.target.value } })} />
-      </div>
-      <div>
-        <label className="text-xs text-zinc-400 mb-1 block">Accepted types</label>
-        <input className="w-full rounded-lg border px-2.5 py-1.5 text-xs text-white bg-zinc-900 border-zinc-700 focus:outline-none focus:border-zinc-500"
-          value={node.params.accept ?? ""} placeholder="pdf, txt"
-          onChange={(e) => onChange({ ...node, params: { ...node.params, accept: e.target.value } })} />
-      </div>
-    </div>
   );
 }
 
@@ -807,14 +734,49 @@ function DocumentUploadModalPanel({
   draft: WorkflowNode;
   setDraft: (n: WorkflowNode) => void;
 }) {
-  const docs = readMintedDocs();
+  const { user } = useAuth();
+  const [docs, setDocs] = useState<MintedDocument[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!user?.id) { setLoading(false); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const supabase = createClient();
+        const { data } = await supabase
+          .from("wallet_history")
+          .select("id, description, tx_hash, created_at")
+          .eq("user_id", user.id)
+          .eq("type", "minted")
+          .order("created_at", { ascending: false });
+        if (cancelled) return;
+        const rows: MintedDocument[] = (data ?? []).map((r) => ({
+          id: r.id as string,
+          name: typeof r.description === "string"
+            ? r.description.replace(/^Minted\s+/i, "")
+            : r.id,
+          txHash: r.tx_hash as string | null,
+          mintedAt: r.created_at as string,
+        }));
+        setDocs(rows);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [user?.id]);
   const selected = draft.params.documentId ?? "";
 
   return (
     <>
       <div>
         <p className="text-xs font-medium text-zinc-400 mb-2">Select Minted Document</p>
-        {docs.length === 0 ? (
+        {loading ? (
+          <div className="rounded-lg px-4 py-5 text-center" style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)" }}>
+            <p className="text-xs text-zinc-500">Loading…</p>
+          </div>
+        ) : docs.length === 0 ? (
           <div
             className="rounded-lg px-4 py-5 text-center"
             style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)" }}
@@ -848,9 +810,8 @@ function DocumentUploadModalPanel({
                   <div className="flex-1 min-w-0">
                     <p className="text-xs font-medium text-white truncate">{doc.name}</p>
                     <p className="text-xs text-zinc-500">
-                      {doc.type}
-                      {doc.size ? ` · ${(doc.size / 1024).toFixed(1)} KB` : ""}
-                      {doc.mintedAt ? ` · ${new Date(doc.mintedAt).toLocaleDateString()}` : ""}
+                      {doc.mintedAt ? new Date(doc.mintedAt).toLocaleDateString() : ""}
+                      {doc.txHash ? ` · ${doc.txHash.slice(0, 8)}…` : ""}
                     </p>
                   </div>
                   {isSelected && <IconCheck size={13} style={{ color: "#3b82f6", flexShrink: 0 }} />}
@@ -1135,9 +1096,8 @@ function Inspector({ node, onChange, onClose }: { node: WorkflowNode; onChange: 
         </button>
       </div>
       <div className="flex-1 overflow-y-auto p-4">
-        {node.type === "DocumentUpload" && <DocumentUploadInspector node={node} onChange={onChange} />}
         {node.type === "BankingEvent" && <BankingEventInspector node={node} onChange={onChange} />}
-        {node.type !== "DocumentUpload" && node.type !== "BankingEvent" && <GenericInspector node={node} onChange={onChange} />}
+        {node.type !== "BankingEvent" && <GenericInspector node={node} onChange={onChange} />}
       </div>
     </div>
   );
@@ -1230,8 +1190,8 @@ function RunTimeline({
   onRerun: () => void;
 }) {
   const verdictConfig = {
-    approved: { color: "#10b981", bg: "rgba(16,185,129,0.1)", border: "rgba(16,185,129,0.25)", icon: IconCircleCheck, label: "Approved" },
-    denied: { color: "#f43f5e", bg: "rgba(244,63,94,0.1)", border: "rgba(244,63,94,0.25)", icon: IconCircleX, label: "Denied" },
+    approved: { color: "#10b981", bg: "rgba(16,185,129,0.1)", border: "rgba(16,185,129,0.25)", icon: IconCircleCheck, label: "Sent" },
+    denied: { color: "#f43f5e", bg: "rgba(244,63,94,0.1)", border: "rgba(244,63,94,0.25)", icon: IconCircleX, label: "Failed" },
     incomplete: { color: "#6366f1", bg: "rgba(99,102,241,0.1)", border: "rgba(99,102,241,0.25)", icon: IconAlertCircle, label: "Incomplete" },
   };
 
@@ -1320,11 +1280,13 @@ function RunTimeline({
 
 function WorkflowEditor({ workflowId }: { workflowId: string }) {
   const router = useRouter();
+  const { user, signOut } = useAuth();
   const [workflow, setWorkflow] = useState<Workflow | null>(null);
   const [nodes, setNodes] = useState<WorkflowNode[]>([]);
   const [edges, setEdges] = useState<WorkflowEdge[]>([]);
   const [saved, setSaved] = useState(false);
   const [modalNodeId, setModalNodeId] = useState<string | null>(null);
+  const [mintedDocs, setMintedDocs] = useState<RunnerDoc[]>([]);
   const canvasRef = useRef<HTMLDivElement>(null);
 
   // Run state
@@ -1349,6 +1311,32 @@ function WorkflowEditor({ workflowId }: { workflowId: string }) {
     setNodes(wf.nodes);
     setEdges(wf.edges ?? []);
   }, [workflowId, router]);
+
+  // Fetch minted docs from Supabase so the runner can validate them
+  useEffect(() => {
+    if (!user?.id) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const supabase = createClient();
+        const { data } = await supabase
+          .from("wallet_history")
+          .select("id, description")
+          .eq("user_id", user.id)
+          .eq("type", "minted");
+        if (cancelled) return;
+        setMintedDocs(
+          (data ?? []).map((r) => ({
+            id: r.id as string,
+            name: typeof r.description === "string"
+              ? r.description.replace(/^Minted\s+/i, "")
+              : r.id,
+          }))
+        );
+      } catch { /* non-fatal */ }
+    })();
+    return () => { cancelled = true; };
+  }, [user?.id]);
 
   // Save
   const handleSave = useCallback(() => {
@@ -1380,12 +1368,12 @@ function WorkflowEditor({ workflowId }: { workflowId: string }) {
         }
         return [...prev, step];
       });
-    });
+    }, mintedDocs);
 
     setFinalStatus(result.finalStatus);
     setRunSummary(result.summary);
     setRunning(false);
-  }, [running, workflow, nodes, edges]);
+  }, [running, workflow, nodes, edges, mintedDocs]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -1665,6 +1653,7 @@ function WorkflowEditor({ workflowId }: { workflowId: string }) {
         if (!modalNode) return null;
         return (
           <BlockConfigModal
+            key={modalNodeId}
             node={modalNode}
             onChange={(updated) => { updateNode(updated); }}
             onClose={() => setModalNodeId(null)}
