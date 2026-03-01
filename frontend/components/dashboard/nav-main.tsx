@@ -24,7 +24,7 @@ export function NavMain({
   const pathname = usePathname()
   return (
     <SidebarGroup>
-      <SidebarGroupContent className="flex flex-col gap-2">
+      <SidebarGroupContent>
         <SidebarMenu>
           <SidebarMenuItem className="flex items-center gap-2">
             <SidebarMenuButton
@@ -41,8 +41,8 @@ export function NavMain({
         </SidebarMenu>
         <SidebarMenu>
           {items.map((item) => {
-            const isLink = item.url && !item.url.startsWith("#")
-            const isActive = pathname === item.url
+            const isLink = item.url !== "#"
+            const isActive = isLink && (pathname === item.url || pathname.startsWith(`${item.url}/`))
             return (
               <SidebarMenuItem key={item.title}>
                 {isLink ? (

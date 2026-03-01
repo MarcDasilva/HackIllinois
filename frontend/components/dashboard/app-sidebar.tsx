@@ -18,6 +18,9 @@ import {
   IconUsers,
   IconWallet,
   IconBuilding,
+  IconGitBranch,
+  IconBuildingBank,
+  IconFileStack,
 } from "@tabler/icons-react";
 
 import { NavDocuments } from "@/components/dashboard/nav-documents";
@@ -62,6 +65,21 @@ export function AppSidebar({
         title: "Hierarchy",
         url: "/dashboard/hierarchy",
         icon: IconHierarchy2,
+      },
+      {
+        title: "Bank Profiles",
+        url: "/dashboard/bank-profiles",
+        icon: IconBuildingBank,
+      },
+      {
+        title: "Workflows",
+        url: "/dashboard/workflows",
+        icon: IconGitBranch,
+      },
+      {
+        title: "Documents",
+        url: "/dashboard/documents",
+        icon: IconFileStack,
       },
       {
         title: "Lifecycle",
